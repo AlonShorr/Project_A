@@ -1,0 +1,8 @@
+-e .[gui]
+autopep8>=2.0.4
+coverage>=7.4.3
+ipython>=8.21.0
+pylint>=3.0.3
+pytest>=8.0.2
+pytest-emoji>=0.2.0
+pytest-md>=0.2.0

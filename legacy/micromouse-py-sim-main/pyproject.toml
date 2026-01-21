@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools >= 69.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sim"
+dynamic = ["version"]
+description = "A simulator for the Micromouse competition with solutions"
+authors = [
+  {name = "Roy Abudi", email = "Roynecro97@users.noreply.github.com"},
+  {name = "Omer Huly", email = "16382306+OmerHuly@users.noreply.github.com"},
+]
+maintainers = [
+  {name = "Roy Abudi", email = "Roynecro97@users.noreply.github.com"},
+  {name = "Omer Huly", email = "16382306+OmerHuly@users.noreply.github.com"},
+]
+readme = "README.md"
+keywords = [
+  "flood-fill",
+  "micromouse",
+  "simulator",
+]
+classifiers =[
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX",
+  "Operating System :: Unix",
+  "Private :: Do Not Upload",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Education",
+  "Topic :: Games/Entertainment :: Simulation",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: pygame",
+  "Typing :: Typed",
+]
+requires-python = ">= 3.12"
+dependencies = [
+  "numpy>=1.26.4",
+  "rich>=13.7.0",
+]
+
+[project.scripts]
+micromouse = "sim.__main__:main"
+
+[project.gui-scripts]
+sim = "sim.gui:_main [gui]"
+
+[project.entry-points."micromouse.gui"]
+default = "sim.gui:GUIRenderer"
+
+[project.entry-points."micromouse.tool"]
+maze = "sim.tools:MazeEditor"
+
+[project.entry-points."micromouse.robot"]
+better_random = "sim.robots.random:better_random_robot"
+
+[project.optional-dependencies]
+gui = [
+  "pygame==2.5.2",
+  "pygame_gui==0.6.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/Roynecro97/micromouse-py-sim"
+Repository = "https://github.com/Roynecro97/micromouse-py-sim.git"
+Issues = "https://github.com/Roynecro97/micromouse-py-sim/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "sim.__version__"}
+
+[tool.setuptools.packages.find]
+exclude = ["mazes"]
+namespaces = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "--doctest-modules --showlocals -ra"
+testpaths = [
+  "sim",
+  "tests",
+]

@@ -1,0 +1,16 @@
+{
+  "folders": [
+    { "name": "Project_A (root)", "path": "." },
+    { "name": "Legacy Firmware", "path": "legacy/micromouse-robot-main" },
+    { "name": "Development", "path": "development" },
+    { "name": "Tools", "path": "tools" }
+  ],
+  "settings": {
+    "idf.espIdfPath": "/home/alonshorr/dev/Project_A/tools/esp-idf",
+    "idf.toolsPath": "/home/alonshorr/.espressif",
+    "idf.pythonBinPath": "/home/alonshorr/.espressif/python_env/idf5.1_py3.12_env/bin/python",
+    "idf.flashType": "UART",
+    "idf.adapterTargetName": "esp32",
+    "terminal.integrated.defaultProfile.linux": "bash"
+  }
+}
