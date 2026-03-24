@@ -11,7 +11,10 @@ namespace micromouse {
 // Disposition of the sensors on the robot (add later)
 // const float SENSOR_X[] = {0.062f, 0.090f, 0.094f, 0.092f, 0.067f};
 // const float SENSOR_Y[] = {0.054f, 0.040f, 0.0f, -0.039f, -0.054f};
-const float SENSOR_THETA[] = {-1.5707f, -0.6495f, 0.0f, 0.7037f, 1.5707f}; // radians
+
+// Based on distance_sensor.cpp the sensor array starts with +90 degrees and ends
+// with -90 degrees
+const float SENSOR_THETA[] = {1.5707f, 0.7037f, 0.0f, -0.6495f, -1.5707f}; // radians
 
 Localization::Localization() {
     float p = 1.0f / (LOC_ROWS * LOC_COLS); // initialize with uniform distribution 1/(N)
@@ -68,7 +71,7 @@ void Localization::print_distance_map_debug() {
             }
         }
     }
-    std::printf("=== END DISTANCE MAP DUMP ===\n\n");
+    std::printf("=== i DISTANCE MAP DUMP ===\n\n");
     // m_logger.log("=== END DISTANCE MAP DUMP ===\n\n");
 }
 
@@ -92,6 +95,7 @@ float Localization::cast_ray(float start_x, float start_y, float angle) {
     return min_dist;
 }
 
+// Updates the probabilities of each cell given the current yaw
 void Localization::update(const std::array<float, LOC_SENSORS>& measurements, float current_yaw) {
     network_loop();
 
@@ -109,8 +113,10 @@ void Localization::update(const std::array<float, LOC_SENSORS>& measurements, fl
     while(current_yaw < 0) current_yaw += 2 * 3.14159f;
     while(current_yaw >= 2 * 3.14159f) current_yaw -= 2 * 3.14159f;
     
+    // Given the current yaw, give the closest index from the 8 indexes
     int angle_idx = static_cast<int>(std::round(current_yaw / (3.14159f / 4.0f))) % 8;
 
+    // for each cell in the grid, calculate the probability and update it
     for(int r=0; r<LOC_ROWS; r++) {
         for(int c=0; c<LOC_COLS; c++) {
             if(m_probs[r][c] < 0.00001f) continue;
@@ -129,6 +135,63 @@ void Localization::update(const std::array<float, LOC_SENSORS>& measurements, fl
                 
                 likelihood *= std::exp(-(diff*diff)/(2*sigma*sigma));
             }
+            m_probs[r][c] *= likelihood;
+        }
+    }
+    normalize();
+}
+
+// update probabities without knowing yaw
+void Localization::update(const std::array<float, LOC_SENSORS>& measurements) {
+    network_loop(); // init the network
+
+    // --- LOG SENSORS TO PHONE ---
+    // Only log every 500ms to avoid flooding
+    static unsigned long last_sensor_log = 0;
+    if (millis() - last_sensor_log > 500) {
+        m_logger.log("SENSORS: [%.3f, %.3f, %.3f, %.3f, %.3f]\n", 
+                     measurements[0], measurements[1], measurements[2], measurements[3], measurements[4]);
+        last_sensor_log = millis();
+    }
+    // ----------------------------
+    
+    // Given the current yaw, give the closest index from the 8 indexes
+    int closest_angle_idx = 0.0f;
+
+    // for each cell in the grid, calculate the probability and update it
+    for(int r=0; r<LOC_ROWS; r++) {
+        for(int c=0; c<LOC_COLS; c++) {
+            // if probability of current cell is low -> skip
+            if(m_probs[r][c] < 0.00001f) continue;
+
+            float likelihood = 0.0f; // cell likelihood
+            float angle_likelihoods[LOC_ANGLES] = {1.0f}; 
+            float max_likelihood = 0.0f; // max angle likelihood
+            int max_angle_idx = 0;
+
+            // for each one of the 8 angles check the probability 
+            for (int a=0; a<LOC_ANGLES; a++){
+                for(int s=0; s<LOC_SENSORS; s++) {
+
+                    float z = measurements[s]; // real readings 
+
+                    // Ignore invalid readings
+                    if(z > 1.3f || z < 0.001f) continue;
+
+                    float expected = m_lookup[r][c][a][s];
+                    float diff = z - expected;
+                    float sigma = 0.02f; // 2cm standard deviation 
+                    
+                    angle_likelihoods[a] *= std::exp(-(diff*diff)/(2*sigma*sigma));
+                }
+                // update the max to find the closest angle 
+                if (angle_likelihoods[a] > max_likelihood){
+                    max_likelihood = angle_likelihoods[a];
+                    max_angle_idx = a; // future use
+                }
+                likelihood += angle_likelihoods[a]; 
+            }
+            likelihood /= LOC_ANGLES;
             m_probs[r][c] *= likelihood;
         }
     }

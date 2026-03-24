@@ -17,7 +17,7 @@ inline const std::array<Segment, 4> maze_map = {
     // How to define segments:
     // Segment{point1, point2]} where:
     // point1 = Eigen::Vector2f(x1, y1), point2 = Eigen::Vector2f(x2, y2)
-
+    
     // Left Wall: p1=(0,0), p2=(0,3)
     Segment{Eigen::Vector2f{0.0f, 0.0f}, Eigen::Vector2f{0.0f, 3 * wall_length}},
     

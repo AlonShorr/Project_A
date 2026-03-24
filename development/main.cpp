@@ -263,10 +263,10 @@ static KalmanFilter kalman_filter;
 //     );
 // }
 
-// static auto now() noexcept
-// {
-//     return std::chrono::milliseconds{millis()};
-// }
+static auto now() noexcept
+{
+    return std::chrono::milliseconds{millis()};
+}
 
 // WARNING: if program reaches end of function app_main() the MCU will restart.
 extern "C" void app_main()
@@ -385,202 +385,205 @@ extern "C" void app_main()
     localization.init(map_segments);
     localization.print_distance_map_debug();
     std::printf("Localization initialized.\n");
-    while (true) {
-        delay(1000);
-    }
+    // while (true) {
+    //     delay(1000);
+    // }
 
-    // static const auto led_pin = GPIO_NUM_13;
-    // pinMode(led_pin, OUTPUT);
+    static const auto led_pin = GPIO_NUM_13;
+    pinMode(led_pin, OUTPUT);
     // auto led_state = false;
 
-    // constexpr int sda_pin = GPIO_NUM_23;
-    // constexpr int scl_pin = GPIO_NUM_22;
-    // TwoWire i2c(0);
-    // i2c.setPins(sda_pin, scl_pin);
-    // i2c.begin();
+    constexpr int sda_pin = GPIO_NUM_23;
+    constexpr int scl_pin = GPIO_NUM_22;
+    TwoWire i2c(0);
+    i2c.setPins(sda_pin, scl_pin);
+    i2c.begin();
+    delay(100);  // Add this to give I2C bus time to stabilize
 
-    // auto &distance_sensors = DistanceSensors::get_instance();
-    // distance_sensors.init(i2c);
+
+    auto &distance_sensors = DistanceSensors::get_instance();
+    distance_sensors.init(i2c);
 
     
 
-    // static constexpr float d_kv = 0.014f;
-    // static constexpr float d_kp = 0.0005f;
-    // static constexpr float d_ki = 0.0f;
-    // static constexpr float d_kd = 0.005f;
+    static constexpr float d_kv = 0.014f;
+    static constexpr float d_kp = 0.0005f;
+    static constexpr float d_ki = 0.0f;
+    static constexpr float d_kd = 0.005f;
 
-    // static constexpr float a_kv = 0.1f;
-    // static constexpr float a_kp = 0.05f;
-    // static constexpr float a_ki = 0.0f;
-    // static constexpr float a_kd = 0.005f;
+    static constexpr float a_kv = 0.1f;
+    static constexpr float a_kp = 0.05f;
+    static constexpr float a_ki = 0.0f;
+    static constexpr float a_kd = 0.005f;
 
-    // static constexpr float v_kv = 1.0f;
-    // static constexpr float v_kp = 3.0f;
-    // static constexpr float v_ki = 0.0f;
-    // static constexpr float v_kd = 0.25f;
+    static constexpr float v_kv = 1.0f;
+    static constexpr float v_kp = 3.0f;
+    static constexpr float v_ki = 0.0f;
+    static constexpr float v_kd = 0.25f;
 
-    // AlgorithmApi algorithm;
-    // const auto start_pos = *algorithm.get_next();
-    // auto alg_pos = algorithm.get_next();
-    // PidArgs pid_args{
-    //     .left{
-    //         .motor{GPIO_NUM_17, GPIO_NUM_32, GPIO_NUM_14, GPIO_NUM_21, LeftMotor, true},
-    //         .linear_velocity_distance_pid{d_kp, d_ki, d_kd},
-    //         .angular_velocity_angle_pid{a_kp, a_ki, a_kd},
-    //         .velocity_pid{v_kp, v_ki, v_kd},
-    //         .distance_linear_Kv = d_kv,
-    //         .distance_angular_Kv = a_kv,
-    //         .velocity_Kv = v_kv,
-    //         .Ks = 0.71f,
-    //         .output = 0.0f,
-    //         .wanted_velocity{},
-    //         .current_velocity{},
-    //     },
-    //     .right{
-    //         .motor{GPIO_NUM_33, GPIO_NUM_27, GPIO_NUM_12, GPIO_NUM_18, RightMotor, true},
-    //         .linear_velocity_distance_pid{d_kp, d_ki, d_kd},
-    //         .angular_velocity_angle_pid{a_kp, a_ki, a_kd},
-    //         .velocity_pid{v_kp, v_ki, v_kd},
-    //         .distance_linear_Kv = d_kv,
-    //         .distance_angular_Kv = a_kv,
-    //         .velocity_Kv = v_kv,
-    //         .Ks = 0.71f,
-    //         .output = 0.0f,
-    //         .wanted_velocity{},
-    //         .current_velocity{},
-    //     },
-    //     .target_pos{start_pos},
-    //     .pos{start_pos},
-    //     .sensors_available = false,
-    // };
+    AlgorithmApi algorithm;
+    const auto start_pos = *algorithm.get_next();
+    auto alg_pos = algorithm.get_next();
+    PidArgs pid_args{
+        .left{
+            .motor{GPIO_NUM_17, GPIO_NUM_32, GPIO_NUM_14, GPIO_NUM_21, LeftMotor, true},
+            .linear_velocity_distance_pid{d_kp, d_ki, d_kd},
+            .angular_velocity_angle_pid{a_kp, a_ki, a_kd},
+            .velocity_pid{v_kp, v_ki, v_kd},
+            .distance_linear_Kv = d_kv,
+            .distance_angular_Kv = a_kv,
+            .velocity_Kv = v_kv,
+            .Ks = 0.71f,
+            .output = 0.0f,
+            .wanted_velocity{},
+            .current_velocity{},
+        },
+        .right{
+            .motor{GPIO_NUM_33, GPIO_NUM_27, GPIO_NUM_12, GPIO_NUM_18, RightMotor, true},
+            .linear_velocity_distance_pid{d_kp, d_ki, d_kd},
+            .angular_velocity_angle_pid{a_kp, a_ki, a_kd},
+            .velocity_pid{v_kp, v_ki, v_kd},
+            .distance_linear_Kv = d_kv,
+            .distance_angular_Kv = a_kv,
+            .velocity_Kv = v_kv,
+            .Ks = 0.71f,
+            .output = 0.0f,
+            .wanted_velocity{},
+            .current_velocity{},
+        },
+        .target_pos{start_pos},
+        .pos{start_pos},
+        .sensors_available = false,
+    };
 
-    // // Setup boot button
-    // static constexpr auto boot_button_pin = GPIO_NUM_0;
-    // pinMode(boot_button_pin, INPUT_PULLUP);
+    // Setup boot button
+    static constexpr auto boot_button_pin = GPIO_NUM_0;
+    pinMode(boot_button_pin, INPUT_PULLUP);
 
-    // // Wait loop
-    // std::printf("Press boot button to start...\n");
-    // while (digitalRead(boot_button_pin) == HIGH){
-    //     delay(10);
-    // }
-    // std::printf("Starting sequence...\n");
+    // Wait loop
+    std::printf("Press boot button to start...\n");
+    while (digitalRead(boot_button_pin) == HIGH){
+        delay(10);
+    }
+    std::printf("Starting sequence...\n");
     
-    // // ignore button press and only release after button is released
-    // while (digitalRead(boot_button_pin) == LOW){
-    //     delay(10);
-    // }
+    // ignore button press and only release after button is released
+    while (digitalRead(boot_button_pin) == LOW){
+        delay(10);
+    }
 
-    // // start delay, log setup and sensors warmup:
+    // start delay, log setup and sensors warmup:
     // print_log(pid_args);
-    // sleep(10);
-    // for (auto i = 0; i < DistanceSensors::avg_filter_size; i++)  // warmup
-    // {
-    //     distance_sensors.read_all();
-    // }
+    sleep(10);
+    for (auto i = 0; i < DistanceSensors::avg_filter_size; i++)  // warmup
+    {
+        distance_sensors.read_all();
+    }
     // print_log(pid_args);
 
-    // static constexpr auto max_diff_distance = 20.0_mm;
-    // static constexpr Angle max_diff_angle{std::numbers::pi_v<float> / 60};
+    static constexpr auto max_diff_distance = 20.0_mm;
+    static constexpr Angle max_diff_angle{std::numbers::pi_v<float> / 60};
 
-    // // start PID task
-    // pid_args.left.motor.clear_encoder();
-    // pid_args.right.motor.clear_encoder();
-    // // PeriodicCaller pid_caller(pid_loop, static_cast<void *>(&pid_args));
-    // // pid_caller.start(pid_loop_period);
+    // start PID task
+    pid_args.left.motor.clear_encoder();
+    pid_args.right.motor.clear_encoder();
+    // PeriodicCaller pid_caller(pid_loop, static_cast<void *>(&pid_args));
+    // pid_caller.start(pid_loop_period);
 
-    // static constexpr auto loop_interval = 20ms;
-    // static_assert(loop_interval >= 20ms, "loop_interval doesn't match with sensor reading times");
+    static constexpr auto loop_interval = 20ms;
+    static_assert(loop_interval >= 20ms, "loop_interval doesn't match with sensor reading times");
 
     // Main loop
-    // while (true)
-    // {
-    //     const auto cycle_start_time = now();
+    while (true)
+    {
+        const auto cycle_start_time = now();
         
-    //     // Read sensors (returns std::array<meters, 5>)
-    //     auto reading_meters = distance_sensors.read_all();
+        // Read sensors (returns std::array<meters, 5>)
+        auto reading_meters = distance_sensors.read_all();
 
-    //     // Convert to float array
-    //     std::array<float, 5> readings_float;
-    //     for (int i = 0; i < 5; i++) {
-    //         readings_float[i] = reading_meters[i].count();
-    //     }
+        // Convert to float array
+        std::array<float, 5> readings_float;
+        for (int i = 0; i < 5; i++) {
+            readings_float[i] = reading_meters[i].count();
+        }
 
-    //     // Get current heading (radians)
-    //     // float theta = pid_args.pos.theta.get();
-    //     float theta = 0.0f; // TEMP FIX: Assume facing "East" for testing
+        // Get current heading (radians)
+        // float theta = pid_args.pos.theta.get();
+        // float theta = 3.14159f; // TEMP FIX: Assume facing "West" for testing
 
-    //     // Update localization
-    //     localization.update(readings_float, theta);
+        // Update localization given theta
+        // localization.update(readings_float, theta);
+        localization.update(readings_float);
         
-    //     // print result
-    //     int r, c;
-    //     float prob;
-    //     localization.get_best_position(r, c, prob);
+        // print result
+        int r, c;
+        float prob;
+        localization.get_best_position(r, c, prob);
 
-    //     // only print every 500ms or so to avoid spamming
-    //     static long last_print = 0;
-    //     if (millis() - last_print > 500) {
-    //         std::printf("IP: %s\n", WiFi.localIP().toString().c_str());
-    //         std::printf("LOC: Best (%d, %d) Prob: %.2f\n", r, c, prob);
-    //         // Log raw sensor values for debugging
-    //         std::printf("Sensors: [%.2f, %.2f, %.2f, %.2f, %.2f]\n", 
-    //                     readings_float[0], readings_float[1], readings_float[2], readings_float[3], readings_float[4]);
-    //         last_print = millis();
-    //     }
+        // only print every 500ms or so to avoid spamming
+        static long last_print = 0;
+        if (millis() - last_print > 500) {
+            std::printf("IP: %s\n", WiFi.localIP().toString().c_str());
+            std::printf("LOC: Best (%d, %d) Prob: %.2f\n", r, c, prob);
+            // Log raw sensor values for debugging
+            std::printf("Sensors: [%.2f, %.2f, %.2f, %.2f, %.2f]\n", 
+                        readings_float[0], readings_float[1], readings_float[2], readings_float[3], readings_float[4]);
+            last_print = millis();
+        }
 
-    //     // pid loop
-    //     // pid_args.sensors_available = true;
-    //     // if (alg_pos)
-    //     // {
-    //     //     const auto &next_pos = *alg_pos;
-    //     //     pid_args.target_pos = next_pos;
-    //     //     const auto x_err = unit_cast<millimeters>((next_pos.x - pid_args.pos.x).get());
-    //     //     const auto y_err = unit_cast<millimeters>((next_pos.y - pid_args.pos.y).get());
-    //     //     const auto pos_angle_err = next_pos.theta - pid_args.pos.theta;
-    //     //     const auto next_direction = to_closest_direction(next_pos.theta);
-    //     //     if (std::abs(pos_angle_err.get()) <= max_diff_angle.get()
-    //     //         && abs(is_vertical(next_direction) ? y_err : x_err) <= max_diff_distance)
-    //     //     {
-    //     //         pid_args.pos = next_pos;  // snap
-    //     //         alg_pos = algorithm.get_next();
-    //     //         led_state = !led_state;
-    //     //         digitalWrite(led_pin, led_state);
-    //     //     }
-    //     // }
-    //     // else
-    //     // {
-    //     //     pid_caller.stop();
-    //     //     pid_args.left.motor.set_pwm(0.0f);
-    //     //     pid_args.right.motor.set_pwm(0.0f);
-    //     // }
+        // pid loop
+        // pid_args.sensors_available = true;
+        // if (alg_pos)
+        // {
+        //     const auto &next_pos = *alg_pos;
+        //     pid_args.target_pos = next_pos;
+        //     const auto x_err = unit_cast<millimeters>((next_pos.x - pid_args.pos.x).get());
+        //     const auto y_err = unit_cast<millimeters>((next_pos.y - pid_args.pos.y).get());
+        //     const auto pos_angle_err = next_pos.theta - pid_args.pos.theta;
+        //     const auto next_direction = to_closest_direction(next_pos.theta);
+        //     if (std::abs(pos_angle_err.get()) <= max_diff_angle.get()
+        //         && abs(is_vertical(next_direction) ? y_err : x_err) <= max_diff_distance)
+        //     {
+        //         pid_args.pos = next_pos;  // snap
+        //         alg_pos = algorithm.get_next();
+        //         led_state = !led_state;
+        //         digitalWrite(led_pin, led_state);
+        //     }
+        // }
+        // else
+        // {
+        //     pid_caller.stop();
+        //     pid_args.left.motor.set_pwm(0.0f);
+        //     pid_args.right.motor.set_pwm(0.0f);
+        // }
 
-    //     // debug_utils::halt_if_input(
-    //     //     debug_utils::OnHalt(
-    //     //         [&]
-    //     //         {
-    //     //             pid_caller.stop();
-    //     //             pid_args.left.motor.set_pwm(0.0f);
-    //     //             pid_args.right.motor.set_pwm(0.0f);
-    //     //         }
-    //     //     ),
-    //     //     debug_utils::OnResume([&] { pid_caller.start(pid_loop_period); }),
-    //     //     debug_utils::Verbosity::Silent
-    //     // );
+        // debug_utils::halt_if_input(
+        //     debug_utils::OnHalt(
+        //         [&]
+        //         {
+        //             pid_caller.stop();
+        //             pid_args.left.motor.set_pwm(0.0f);
+        //             pid_args.right.motor.set_pwm(0.0f);
+        //         }
+        //     ),
+        //     debug_utils::OnResume([&] { pid_caller.start(pid_loop_period); }),
+        //     debug_utils::Verbosity::Silent
+        // );
 
-    //     // // keep loop time at least loop_interval.
-    //     // while (now() - cycle_start_time < loop_interval)
-    //     // {
-    //     //     delay(1);
-    //     // }
+        // // keep loop time at least loop_interval.
+        // while (now() - cycle_start_time < loop_interval)
+        // {
+        //     delay(1);
+        // }
 
-    //     // print_log(pid_args, now() - cycle_start_time);
+        // print_log(pid_args, now() - cycle_start_time);
 
-    //     // Ensure minimum delay for network stability
-    //     delay(5); 
+        // Ensure minimum delay for network stability
+        delay(5); 
         
-    //     while (now() - cycle_start_time < loop_interval)
-    //     {
-    //         delay(1);
-    //     }
-    // }
+        while (now() - cycle_start_time < loop_interval)
+        {
+            delay(1);
+        }
+    }
 }

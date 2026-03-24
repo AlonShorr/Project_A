@@ -22,6 +22,7 @@ public:
     Localization();
 
     void init(const std::vector<segment::Segment>& segments);
+    void update(const std::array<float, LOC_SENSORS>& measurements);
     void update(const std::array<float, LOC_SENSORS>& measurements, float current_yaw);
     void print_distance_map_debug();
     void get_best_position(int& out_row, int& out_col, float& out_prob);
