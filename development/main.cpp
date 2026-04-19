@@ -62,7 +62,7 @@ static constexpr auto is_vertical(Direction d) noexcept
 //     {
 //         return (angle.get() > 0) ? Direction::South : Direction::North;
 //     }
-
+//
 //     return Direction::West;
 // }
 
@@ -129,7 +129,7 @@ static KalmanFilter kalman_filter;
 // static void pid_loop(void *args) noexcept
 // {
 //     static auto &distance_sensors = DistanceSensors::get_instance();
-
+//
 //     // Initialization:
 //     using LinearMotorSpeed = ConstrainedValue<
 //         ValueRange<float, MotorSpeed::range_type::low / 12.0f, MotorSpeed::range_type::high / 12.0f, Mode::Closed>,
@@ -137,7 +137,7 @@ static KalmanFilter kalman_filter;
 //     using RotationalMotorSpeed = ConstrainedValue<
 //         ValueRange<float, MotorSpeed::range_type::low / 16.0f, MotorSpeed::range_type::high / 16.0f, Mode::Closed>,
 //         false>;
-
+//
 //     static_assert(
 //         MotorSpeed::range_type::contains(LinearMotorSpeed::range_type::low)
 //         && MotorSpeed::range_type::contains(LinearMotorSpeed::range_type::high)
@@ -150,7 +150,7 @@ static KalmanFilter kalman_filter;
 //         MotorSpeed::range_type::contains(LinearMotorSpeed::range_type::low + RotationalMotorSpeed::range_type::low)
 //         && MotorSpeed::range_type::contains(LinearMotorSpeed::range_type::high + RotationalMotorSpeed::range_type::high)
 //     );
-
+//
 //     // Update pos:
 //     PidArgs *pid_args = static_cast<PidArgs *>(args);
 //     pid_args->left.current_velocity = pid_args->left.motor.get_speed(pid_loop_period);
@@ -160,7 +160,7 @@ static KalmanFilter kalman_filter;
 //     if (pid_args->sensors_available)
 //     {
 //         pid_args->sensors_available = false;
-//         const auto pos_j = pos_jacobian(
+//         const auto pos_j = pos_jacobian(isnt
 //             pid_args->pos,
 //             pid_args->left.current_velocity,
 //             pid_args->right.current_velocity,
@@ -175,7 +175,7 @@ static KalmanFilter kalman_filter;
 //     {
 //         pid_args->pos = predicted_pos; // Motion model
 //     }
-
+//
 //     // Calculate error
 //     const auto x_err = unit_cast<millimeters>((pid_args->target_pos.x - pid_args->pos.x).get());
 //     const auto y_err = unit_cast<millimeters>((pid_args->target_pos.y - pid_args->pos.y).get());
@@ -196,7 +196,7 @@ static KalmanFilter kalman_filter;
 //         }
 //     }();
 //     const auto angle_err = static_cast<float>(pid_args->target_pos.theta - pid_args->pos.theta) + direction_err;
-
+//
 //     // Calculate wanted velocity from distance and angle errors:
 //     const auto calc_wanted_velocity = [&](PidController &pid, float err, float kv)
 //     {
@@ -222,7 +222,7 @@ static KalmanFilter kalman_filter;
 //         const RotationalMotorSpeed wanted_angular_velocity{
 //             calc_wanted_velocity(motor.angular_velocity_angle_pid, angle_err, motor.distance_angular_Kv).count()
 //         };
-
+//
 //         motor.wanted_velocity = limit_velocity(
 //             left ? wanted_linear_velocity.get() + wanted_angular_velocity.get()
 //                  : wanted_linear_velocity.get() - wanted_angular_velocity.get(),
@@ -234,14 +234,14 @@ static KalmanFilter kalman_filter;
 //     };
 //     const MotorSpeed left_motor_velocity{calc_motor_velocity(pid_args->left, true, dist_err, angle_err)};
 //     const MotorSpeed right_motor_velocity{calc_motor_velocity(pid_args->right, false, dist_err, angle_err)};
-
+//
 //     // Outputs:
 //     pid_args->left.output = Motor::bdc_mcpwm_duty_tick_max * left_motor_velocity / Motor::max_speed;
 //     pid_args->right.output = Motor::bdc_mcpwm_duty_tick_max * right_motor_velocity / Motor::max_speed;
 //     pid_args->left.motor.set_pwm(pid_args->left.output);
 //     pid_args->right.motor.set_pwm(pid_args->right.output);
 // }
-
+//
 // static void print_log(const PidArgs &args, const std::chrono::milliseconds &cycle_time = 0ms) noexcept
 // {
 //     std::printf(
