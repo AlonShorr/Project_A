@@ -1,0 +1,103 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ESP-IDF: Build (app path)",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/idfapp",
+      "args": [
+        "${input:idfAppDir}",
+        "build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "ESP-IDF: Fullclean (app path)",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/idfapp",
+      "args": [
+        "${input:idfAppDir}",
+        "fullclean"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}"
+      }
+    },
+    {
+      "label": "ESP-IDF: Flash (app path)",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/idfapp",
+      "args": [
+        "${input:idfAppDir}",
+        "-p",
+        "${input:espPort}",
+        "-b",
+        "${input:flashBaud}",
+        "flash"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}"
+      }
+    },
+    {
+      "label": "ESP-IDF: Monitor (app path)",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/idfapp",
+      "args": [
+        "${input:idfAppDir}",
+        "-p",
+        "${input:espPort}",
+        "monitor"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}"
+      }
+    },
+    {
+      "label": "ESP-IDF: Flash Monitor (app path)",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/idfapp",
+      "args": [
+        "${input:idfAppDir}",
+        "-p",
+        "${input:espPort}",
+        "-b",
+        "${input:flashBaud}",
+        "flash",
+        "monitor"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}"
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "idfAppDir",
+      "type": "promptString",
+      "description": "ESP-IDF app path relative to repo root",
+      "default": "development/localization"
+    },
+    {
+      "id": "espPort",
+      "type": "promptString",
+      "description": "Serial port for flashing and monitoring",
+      "default": "/dev/ttyUSB0"
+    },
+    {
+      "id": "flashBaud",
+      "type": "promptString",
+      "description": "Flash baud rate",
+      "default": "115200"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WRAP_SCRIPT="$ROOT_DIR/tools/idfwrap.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./idfapp <app-path-relative-to-repo-root> [idf.py args...]
+
+Examples:
+  ./idfapp development/localization build
+  ./idfapp legacy/micromouse-robot-main build
+  ./idfapp development/localization -p /dev/ttyUSB0 flash monitor
+  ./idfapp development/localization monitor
+EOF
+}
+
+fail() {
+  echo "ERROR: $*" >&2
+  echo >&2
+  usage >&2
+  exit 1
+}
+
+APP_RELATIVE_PATH="${1:-}"
+if [[ -z "$APP_RELATIVE_PATH" ]]; then
+  fail "Missing ESP-IDF app path."
+fi
+shift || true
+
+APP_CANDIDATE="$ROOT_DIR/$APP_RELATIVE_PATH"
+if [[ ! -e "$APP_CANDIDATE" ]]; then
+  fail "App path does not exist: $APP_RELATIVE_PATH"
+fi
+
+if [[ ! -d "$APP_CANDIDATE" ]]; then
+  fail "App path is not a directory: $APP_RELATIVE_PATH"
+fi
+
+APP_ABSOLUTE_PATH="$(cd "$APP_CANDIDATE" && pwd)"
+if [[ ! -f "$APP_ABSOLUTE_PATH/CMakeLists.txt" ]]; then
+  fail "App path does not contain CMakeLists.txt: $APP_RELATIVE_PATH"
+fi
+
+IDFWRAP_APP="$APP_ABSOLUTE_PATH" exec "$WRAP_SCRIPT" "$@"
