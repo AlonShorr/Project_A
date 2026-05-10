@@ -370,6 +370,14 @@ Run it from the simulator directory using the simulator virtual environment:
     cd /home/alonshorr/dev/Project_A/development/SA_Simulator
     ./robot_sim/bin/python rrt_demo.py
 
+If you want an activated shell first, source the activation script:
+
+    source robot_sim/bin/activate
+
+Do not run `./robot_sim/bin/activate` directly. Bash will report
+`Permission denied` because venv activation scripts are shell snippets meant to
+modify the current shell, not standalone executables.
+
 The demo intentionally requires robot_sim. If run with system Python, it exits
 and prints the correct command.
 
@@ -497,6 +505,10 @@ Run:
     cd /home/alonshorr/dev/Project_A/development/SA_Simulator
     ./robot_sim/bin/python rrt_demo.py
 
+From VS Code, you can also run:
+
+    Terminal: Run Task -> SA Simulator: Run RRT demo
+
 Check the terminal output for:
 
     Wall map compatibility: True
@@ -542,4 +554,3 @@ Correct:
 or:
 
     path_cells_to_world(result["path"])
-

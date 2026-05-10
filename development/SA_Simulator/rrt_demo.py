@@ -6,15 +6,15 @@ Debug actions are printed and replayed only so humans can verify the route.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import random
 import sys
 
 from rrt_planner import (
     FORWARD,
-    TURN_AROUND,
-    TURN_LEFT,
-    TURN_RIGHT,
     apply_internal_action,
+    bfs_shortest_path_cells,
     can_move_forward,
     path_cells_to_world,
     plan_rrt,
@@ -104,6 +104,53 @@ def build_fallback_wall_map():
     return maze
 
 
+def generate_confusing_repetitive_wall_map(rows, cols):
+    """Build a connected 15x20-style map with repeated room/corridor patterns."""
+    import numpy as np
+
+    maze = np.ones((rows, cols, 4), dtype=int)
+
+    def add_v_wall(r, c):
+        if not (0 <= r < rows and 0 <= c < cols - 1):
+            return
+        maze[r, c, 3] = 0
+        maze[r, c + 1, 2] = 0
+
+    def add_h_wall(r, c):
+        if not (0 <= r < rows - 1 and 0 <= c < cols):
+            return
+        maze[r, c, 1] = 0
+        maze[r + 1, c, 0] = 0
+
+    maze[0, :, 0] = 0
+    maze[-1, :, 1] = 0
+    maze[:, 0, 2] = 0
+    maze[:, -1, 3] = 0
+
+    # Repeated room walls: vertical bands every 4 columns and horizontal bands
+    # every 3 rows. Door gaps line up to keep the map connected.
+    for c in range(3, cols - 1, 4):
+        for r in range(rows):
+            if r % 3 == 1:
+                continue
+            add_v_wall(r, c)
+
+    for r in range(2, rows - 1, 3):
+        for c in range(cols):
+            if c % 4 in (1, 2):
+                continue
+            add_h_wall(r, c)
+
+    # Add repeated local pockets while leaving corridor doors open.
+    for base_r in range(0, rows - 2, 3):
+        for base_c in range(0, cols - 3, 4):
+            add_v_wall(base_r, min(base_c + 1, cols - 2))
+            if base_r + 1 < rows - 1:
+                add_h_wall(base_r + 1, min(base_c + 2, cols - 1))
+
+    return maze
+
+
 def load_wall_map():
     from lidar_pygame_sim import generate_wall_map
 
@@ -114,11 +161,12 @@ def require_robot_sim_venv():
     expected_prefix = Path(__file__).resolve().parent / "robot_sim"
     actual_prefix = Path(sys.prefix).resolve()
     if actual_prefix != expected_prefix:
+        python_path = expected_prefix / "bin" / "python"
+        if python_path.exists():
+            print(f"Re-running with robot_sim venv: {python_path}")
+            os.execv(str(python_path), [str(python_path), *sys.argv])
         print(f"Wrong Python environment: {actual_prefix}")
         print(f"Expected robot_sim venv: {expected_prefix}")
-        print("Run:")
-        print(f"  cd {Path(__file__).resolve().parent}")
-        print("  ./robot_sim/bin/python rrt_demo.py")
         raise SystemExit(2)
 
 
@@ -225,7 +273,19 @@ def run_smoke_checks(wall_map, cases):
     return all_ok
 
 
-def plot_result_svg(wall_map, result, start, goal, output_path, case_idx, map_source, map_factory, seed):
+def plot_result_svg(
+    wall_map,
+    result,
+    start,
+    goal,
+    output_path,
+    case_idx,
+    map_source,
+    map_factory,
+    seed,
+    bfs_path=None,
+    closest_state=None,
+):
     rows, cols, _ = wall_map.shape
     cell_px = 42
     margin_left = 54
@@ -285,11 +345,19 @@ def plot_result_svg(wall_map, result, start, goal, output_path, case_idx, map_so
         )
 
     route = [(start[0], start[1])] + result.get("path", [])
+    if bfs_path:
+        points = " ".join(f"{x_for_c(c)},{y_for_r(r)}" for r, c in bfs_path)
+        lines.append(f'<polyline points="{points}" fill="none" stroke="#ff7f0e" stroke-width="3" stroke-dasharray="8 5"/>')
+
     if len(route) >= 2:
         points = " ".join(f"{x_for_c(c)},{y_for_r(r)}" for r, c in route)
         lines.append(f'<polyline points="{points}" fill="none" stroke="#d62728" stroke-width="4"/>')
         for r, c in route:
             lines.append(f'<circle cx="{x_for_c(c)}" cy="{y_for_r(r)}" r="4" fill="#d62728"/>')
+
+    if closest_state is not None:
+        cr, cc, _ = closest_state
+        lines.append(f'<rect x="{x_for_c(cc) - 7}" y="{y_for_r(cr) - 7}" width="14" height="14" fill="none" stroke="#9467bd" stroke-width="3"/>')
 
     lines.append(f'<circle cx="{x_for_c(start[1])}" cy="{y_for_r(start[0])}" r="7" fill="#2ca02c"/>')
     lines.append(f'<text x="{x_for_c(start[1]) + 8}" y="{y_for_r(start[0]) - 8}" font-family="Arial" font-size="11">start</text>')
@@ -303,7 +371,19 @@ def plot_result_svg(wall_map, result, start, goal, output_path, case_idx, map_so
     return output_path
 
 
-def plot_result(wall_map, result, start, goal, output_path, case_idx, map_source, map_factory, seed):
+def plot_result(
+    wall_map,
+    result,
+    start,
+    goal,
+    output_path,
+    case_idx,
+    map_source,
+    map_factory,
+    seed,
+    bfs_path=None,
+    closest_state=None,
+):
     try:
         import matplotlib
 
@@ -313,7 +393,9 @@ def plot_result(wall_map, result, start, goal, output_path, case_idx, map_source
     except Exception as exc:
         svg_path = output_path.with_suffix(".svg")
         print(f"matplotlib unavailable for case {case_idx} ({exc}); writing SVG fallback.")
-        return plot_result_svg(wall_map, result, start, goal, svg_path, case_idx, map_source, map_factory, seed)
+        return plot_result_svg(
+            wall_map, result, start, goal, svg_path, case_idx, map_source, map_factory, seed, bfs_path, closest_state
+        )
 
     rows, cols, _ = wall_map.shape
     fig_w = max(8, cols * 0.52)
@@ -368,10 +450,19 @@ def plot_result(wall_map, result, start, goal, output_path, case_idx, map_source
         ax.plot([pc, cc], [pr, cr], color="tab:blue", alpha=0.12, lw=0.8, zorder=1)
 
     route = [(start[0], start[1])] + result.get("path", [])
+    if bfs_path:
+        xs = [c for r, c in bfs_path]
+        ys = [r for r, c in bfs_path]
+        ax.plot(xs, ys, color="tab:orange", lw=2.2, linestyle="--", label="BFS shortest path", zorder=4)
+
     if len(route) >= 2:
         xs = [c for r, c in route]
         ys = [r for r, c in route]
         ax.plot(xs, ys, color="tab:red", lw=2.5, marker="o", label="official waypoint path", zorder=4)
+
+    if closest_state is not None:
+        cr, cc, _ = closest_state
+        ax.plot(cc, cr, marker="s", markersize=12, markerfacecolor="none", markeredgecolor="tab:purple", markeredgewidth=2.5, label="closest RRT node", zorder=6)
 
     ax.plot(start[1], start[0], "go", markersize=10, label="start", zorder=5)
     ax.plot(goal[1], goal[0], "r*", markersize=14, label="goal", zorder=5)
@@ -390,6 +481,11 @@ def print_case_report(case_idx, wall_map, map_source, map_factory, start, goal, 
     print(f"start: {start}")
     print(f"goal: {goal}")
     print(f"seed: {seed}")
+    bfs_path = bfs_shortest_path_cells(wall_map, (start[0], start[1]), (goal[0], goal[1]))
+    if bfs_path is None:
+        print("BFS reachability: unreachable")
+    else:
+        print(f"BFS reachability: reachable, shortest path length = {len(bfs_path) - 1}")
 
     result = plan_rrt(
         wall_map=wall_map,
@@ -405,11 +501,25 @@ def print_case_report(case_idx, wall_map, map_source, map_factory, start, goal, 
     print(f"success: {result['success']}")
     print(f"iterations: {debug.get('iterations')}")
     print(f"tree nodes: {debug.get('num_nodes')}")
+    print(f"RRT result: {'success' if result['success'] else 'failed'} after {debug.get('iterations')} iterations")
     print(f"path source: {debug.get('path_source')}")
     print(f"raw RRT path cells excluding start: {debug.get('raw_rrt_path')}")
 
     if not result["success"]:
         print(f"failure reason: {debug.get('reason')}")
+        print(
+            "failure diagnostics: "
+            f"unique_states={debug.get('unique_states_in_tree')}/{debug.get('total_possible_states')}, "
+            f"duplicates={debug.get('duplicate_states_rejected')}, "
+            f"invalid_forward={debug.get('invalid_forward_moves')}, "
+            f"wall_collisions={debug.get('invalid_wall_collisions')}, "
+            f"out_of_bounds={debug.get('invalid_out_of_bounds')}, "
+            f"diagonal_blocks={debug.get('diagonal_forward_blocks')}, "
+            f"goal_samples={debug.get('goal_samples')}, "
+            f"expansions={debug.get('successful_expansions')}, "
+            f"closest={debug.get('closest_node_to_goal')}, "
+            f"closest_dist={debug.get('closest_distance_to_goal')}"
+        )
         return result, False, []
 
     full_cell_path = [(start[0], start[1])] + result["path"]
@@ -426,6 +536,107 @@ def print_case_report(case_idx, wall_map, map_source, map_factory, start, goal, 
         print(f"  state {prev} --{action_label(action)}--> state {nxt}")
     print(f"verification: {ok} ({'; '.join(reasons)})")
     return result, ok, transitions
+
+
+def random_cell_pair(rows, cols, rng):
+    start = (rng.randrange(rows), rng.randrange(cols), rng.choice((0, 2, 4, 6)))
+    goal = (rng.randrange(rows), rng.randrange(cols))
+    while goal == start[:2]:
+        goal = (rng.randrange(rows), rng.randrange(cols))
+    return start, goal
+
+
+def run_stress_test(wall_map, map_source, map_factory, label, cases=100):
+    rows, cols, _ = wall_map.shape
+    rng = random.Random(2026 + rows * 31 + cols)
+    reachable_cases = 0
+    successes = 0
+    reachable_failures = []
+    path_lengths = []
+    bfs_lengths = []
+    iterations = []
+
+    print("\nStress test:")
+    print(f"map source: {label}")
+    print(f"map factory: {map_factory}")
+    print(f"cases: {cases}")
+
+    for case_idx in range(cases):
+        start, goal = random_cell_pair(rows, cols, rng)
+        bfs_path = bfs_shortest_path_cells(wall_map, start[:2], goal)
+        if bfs_path is None:
+            continue
+
+        reachable_cases += 1
+        bfs_lengths.append(len(bfs_path) - 1)
+        seed = 5000 + case_idx
+        result = plan_rrt(
+            wall_map,
+            start,
+            goal,
+            max_iter=2500,
+            goal_sample_rate=0.25,
+            random_seed=seed,
+            return_debug=True,
+        )
+        iterations.append(result["debug"].get("iterations", 0))
+        if result["success"]:
+            ok, reasons, _ = verify_result(wall_map, start, goal, result)
+            if ok:
+                successes += 1
+                path_lengths.append(len(result["path"]))
+            else:
+                reachable_failures.append((case_idx, start, goal, seed, result, bfs_path, "; ".join(reasons)))
+        else:
+            reachable_failures.append((case_idx, start, goal, seed, result, bfs_path, result["debug"].get("reason")))
+
+    def avg(values):
+        return sum(values) / len(values) if values else 0.0
+
+    print(f"BFS reachable cases: {reachable_cases}")
+    print(f"RRT success on reachable cases: {successes}/{reachable_cases}")
+    print(f"RRT failures where BFS reachable: {len(reachable_failures)}")
+    print(f"average path length: {avg(path_lengths):.2f}")
+    print(f"average BFS shortest path length: {avg(bfs_lengths):.2f}")
+    print(f"average iterations: {avg(iterations):.2f}")
+
+    saved_failure_plots = []
+    for fail_idx, (case_idx, start, goal, seed, result, bfs_path, reason) in enumerate(reachable_failures):
+        debug = result["debug"]
+        print(
+            f"  failure {fail_idx}: case={case_idx}, start={start}, goal={goal}, seed={seed}, "
+            f"reason={reason}, closest={debug.get('closest_node_to_goal')}, "
+            f"closest_dist={debug.get('closest_distance_to_goal')}, "
+            f"nodes={debug.get('num_nodes')}, expansions={debug.get('successful_expansions')}"
+        )
+        output_path = Path(__file__).with_name(f"rrt_failure_{label}_{fail_idx}.png")
+        plot_path = plot_result(
+            wall_map,
+            result,
+            start,
+            goal,
+            output_path,
+            f"failure {label} {fail_idx}",
+            map_source,
+            map_factory,
+            seed,
+            bfs_path=bfs_path,
+            closest_state=debug.get("closest_node_to_goal"),
+        )
+        if plot_path is not None:
+            saved_failure_plots.append(plot_path)
+
+    return {
+        "label": label,
+        "cases": cases,
+        "reachable_cases": reachable_cases,
+        "successes": successes,
+        "reachable_failures": len(reachable_failures),
+        "avg_path_length": avg(path_lengths),
+        "avg_bfs_length": avg(bfs_lengths),
+        "avg_iterations": avg(iterations),
+        "failure_plots": saved_failure_plots,
+    }
 
 
 def main():
@@ -461,10 +672,35 @@ def main():
             if plot_path is not None:
                 plots.append(plot_path)
 
+    stress_current = run_stress_test(wall_map, map_source, map_factory, "current_map", cases=100)
+
+    confusing_map = generate_confusing_repetitive_wall_map(rows, cols)
+    confusing_compatible, confusing_reason = validate_wall_map_compatibility(confusing_map)
+    print(f"\nConfusing repetitive map compatibility: {confusing_compatible} ({confusing_reason})")
+    if not confusing_compatible:
+        raise SystemExit(1)
+    stress_confusing = run_stress_test(
+        confusing_map,
+        "confusing repetitive map",
+        "rrt_demo.generate_confusing_repetitive_wall_map",
+        "confusing_repetitive_15x20",
+        cases=100,
+    )
+
     print("\nSummary:")
     print(f"map source actually used: {map_source} ({map_factory})")
     print(f"path/debug validation passed for all cases: {all_ok}")
     print(f"plot files saved: {[str(path) for path in plots] if plots else 'none'}")
+    print(
+        "current map RRT success rate on BFS-reachable cases: "
+        f"{stress_current['successes']}/{stress_current['reachable_cases']}"
+    )
+    print(
+        "confusing map RRT success rate on BFS-reachable cases: "
+        f"{stress_confusing['successes']}/{stress_confusing['reachable_cases']}"
+    )
+    failure_plots = stress_current["failure_plots"] + stress_confusing["failure_plots"]
+    print(f"failure debug plots saved: {[str(path) for path in failure_plots] if failure_plots else 'none'}")
     print("axes match simulator convention: x=column c, y=row r, row 0 at top")
     print("debug actions are replayed against path_with_theta in the smoke checks and per-case verification")
 
