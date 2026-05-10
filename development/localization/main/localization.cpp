@@ -4,8 +4,6 @@
 #include <cstdio>
 #include <iostream>
 
-constexpr float kPi = 3.14159265f;
-
 namespace micromouse {
 
 // Sensor Configuration
@@ -42,7 +40,7 @@ void Localization::init(const std::vector<segment::Segment>& segments) {
             float cy = (r + 0.5f) * CELL_SIZE;
 
             for(int a=0; a<LOC_ANGLES; a++) {
-                float robot_theta = a * (2.0f * kPi / 8.0f);
+                float robot_theta = a * (2.0f * 3.14159f / 8.0f);
                 for(int s=0; s<LOC_SENSORS; s++) {
                     float dist = cast_ray(cx, cy, robot_theta + SENSOR_THETA[s]);
                     m_lookup[r][c][a][s] = dist; // in meters
@@ -112,11 +110,11 @@ void Localization::update(const std::array<float, LOC_SENSORS>& measurements, fl
     // ----------------------------
 
     // Normalize Yaw
-    while(current_yaw < 0) current_yaw += 2 * kPi;
-    while(current_yaw >= 2 * kPi) current_yaw -= 2 * kPi;
+    while(current_yaw < 0) current_yaw += 2 * 3.14159f;
+    while(current_yaw >= 2 * 3.14159f) current_yaw -= 2 * 3.14159f;
     
     // Given the current yaw, give the closest index from the 8 indexes
-    int angle_idx = static_cast<int>(std::round(current_yaw / (kPi / 4.0f))) % 8;
+    int angle_idx = static_cast<int>(std::round(current_yaw / (3.14159f / 4.0f))) % 8;
 
     // for each cell in the grid, calculate the probability and update it
     for(int r=0; r<LOC_ROWS; r++) {
