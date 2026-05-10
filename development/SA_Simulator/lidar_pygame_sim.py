@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 import math
 import random
+from rrt_planner import plan_rrt
 
 # --- CONFIGURATION ---
 MAP_WIDTH = 800
@@ -35,6 +36,16 @@ WALL_DOWN = 1
 WALL_LEFT = 2
 WALL_RIGHT = 3
 
+# Overall constants
+LOCALIZATION_THRESHOLD = 0.25 # min peak-prob to trust localization
+LOCALIZATION_MOVES = 8 # max random exploratory moves while lost
+GOAL = (1, 8) # default (row, col) goal
+IS_LOST_THRESHOLD = 0.15 # if peak-prob drops below this then re-localize
+AUTO_STEP_DELAY = 200   # ms between each auto step; adjust with [ / ] keys
+
+# Maps (dr, dc) movement direction to angle_index (0=E,2=S,4=W,6=N)
+DIR_TO_ANGLE = {(-1, 0): 6, (1, 0): 2, (0, -1): 4, (0, 1): 0}
+
 # Colors
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
@@ -45,6 +56,7 @@ GRAY = (50, 50, 50)
 CYAN = (0, 255, 255)
 DARK_RED = (100, 0, 0)
 YELLOW = (255, 255, 0)
+ORANGE = (255, 165, 0)
 SIDEBAR_BG = (30, 30, 30)
 
 class Robot:
@@ -433,28 +445,84 @@ def toggle_wall_click(wall_map, mx, my):
         if c < MAP_COLS - 1: 
             wall_map[r, c+1, WALL_LEFT] = val
 
+def get_best_estimate(prob_matrix):
+    """Return (r,c, peak_probability) of the most likely cell."""
+    idx = np.argmax(prob_matrix)
+    r, c = divmod(idx, MAP_COLS)
+    return r, c, prob_matrix[r, c]
+
+def rrt(start, goal, wall_map):
+    """
+    start: (r, c) or (r, c, theta_idx)
+    goal:  (r, c) target grid cell
+    Returns: list of (r, c) cells from start to goal (inclusive),
+             or empty list if no path found.
+    """
+    result = plan_rrt(wall_map=wall_map, start=start, goal=goal)
+    if result["success"]:
+        start_cell = (int(start[0]), int(start[1]))
+        return [start_cell] + result["path"]
+    print("RRT failed:", result["debug"]["reason"])
+    return []
+
+def do_localization_step(robot, wall_map, spin_count, move_count):
+    """
+    Advance one localization action per frame: spin through all 8 angles first,
+    then try random moves. The caller handles measure + update_probability.
+    Returns (spin_count, move_count, moved_dr, moved_dc).
+    """
+    RANDOM_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    moved_dr, moved_dc = 0, 0
+
+    if spin_count < 8:
+        robot.rotate(1)
+        spin_count += 1
+    elif move_count < LOCALIZATION_MOVES:
+        dr, dc = random.choice(RANDOM_DIRS)
+        if robot.move_rel(dr, dc, wall_map):
+            moved_dr, moved_dc = dr, dc
+        move_count += 1
+    else:
+        # Exhausted spin + explore — reset and try again
+        spin_count = 0
+        move_count = 0
+
+    return spin_count, move_count, moved_dr, moved_dc
+
 def main():
+   
     pygame.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
-    pygame.display.set_caption("Lidar Sim: WASD=Move, QE=Rotate, B=Builder Mode, P=Analysis Mode")
+    pygame.display.set_caption("Lidar Sim: WASD=Move, QE=Rotate, R=Auto, B=Builder, P=Analysis")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 18)
     small_font = pygame.font.SysFont("Arial", 14)
 
-    # 1. Setup
+    # 1. Setup - create the map and precompute distnace map
     wall_map = generate_wall_map()
     expected_data = precompute_all_orientations(wall_map)
     
-    # Init Prob
+    # Init probabilities
     prob_matrix = np.ones((MAP_ROWS, MAP_COLS))
     prob_matrix /= (MAP_ROWS * MAP_COLS)
     
-    robot = Robot(3, 3)
+    robot = Robot(3, 3) # Initialize the robot
     
     analysis_mode = False
-    selected_cells = set() 
+    selected_cells = set()
     building_mode = False
-    
+
+    # Auto mode constants and state
+    AUTO_IDLE, AUTO_LOCALIZING, AUTO_PLANNING, AUTO_MOVING, AUTO_DONE = 0, 1, 2, 3, 4
+    AUTO_STATE_LABELS = {0: "IDLE", 1: "LOCALIZING", 2: "PLANNING", 3: "MOVING", 4: "DONE"}
+    auto_state = AUTO_IDLE
+    planned_path = []
+    loc_spin_count = 0
+    loc_move_count = 0
+    auto_step_delay = AUTO_STEP_DELAY
+    last_auto_step_ms = 0
+    goal = GOAL
+
     def to_cpp_row(py_r): return MAP_ROWS - 1 - py_r
 
     running = True
@@ -485,13 +553,19 @@ def main():
                     elif building_mode:
                         toggle_wall_click(wall_map, mx, my)
                         
-                    # PRIORITY 3: Teleport (Simulation Mode)
+                    # PRIORITY 3: Simulation Mode
                     else:
                         c, r = mx // GRID_SIZE, my // GRID_SIZE
                         if 0 <= c < MAP_COLS and 0 <= r < MAP_ROWS:
-                            robot.move_to(r, c)
-                            # Reset probability on teleport
-                            prob_matrix.fill(1.0 / (MAP_ROWS*MAP_COLS))
+                            if event.button == 3:  # Right-click: set goal
+                                goal = (r, c)
+                                planned_path = []
+                                if auto_state == AUTO_MOVING:
+                                    auto_state = AUTO_PLANNING
+                                print(f"Goal set to {goal}")
+                            else:  # Left-click: teleport
+                                robot.move_to(r, c)
+                                prob_matrix.fill(1.0 / (MAP_ROWS*MAP_COLS))
             
             elif event.type == pygame.KEYDOWN:
                 # Toggle Builder Mode
@@ -525,17 +599,35 @@ def main():
                         print("1. Click cells on the map to mark them (Cyan).")
                         print("2. Press 'P' again to dump their distance data to console.")
                 
-                # Robot Movement (Only if not building and not analyzing)
-                if not building_mode and not analysis_mode:
+                # Toggle Auto Mode (by pressing 'R')
+                if event.key == pygame.K_r and not building_mode and not analysis_mode:
+                    if auto_state in (AUTO_IDLE, AUTO_DONE):
+                        auto_state = AUTO_LOCALIZING
+                        loc_spin_count, loc_move_count = 0, 0
+                        planned_path = []
+                        print("--- AUTO MODE STARTED: Localizing... ---")
+                    else:
+                        auto_state = AUTO_IDLE
+                        planned_path = []
+                        print("--- AUTO MODE STOPPED ---")
+
+                # Adjust auto-step delay (available in any mode)
+                if event.key == pygame.K_LEFTBRACKET:
+                    auto_step_delay = max(50, auto_step_delay - 50)
+                elif event.key == pygame.K_RIGHTBRACKET:
+                    auto_step_delay = min(2000, auto_step_delay + 50)
+
+                # Robot Movement (Only if not building, not analyzing, and not in auto)
+                if not building_mode and not analysis_mode and auto_state == AUTO_IDLE:
                     if event.key == pygame.K_w:   dr, dc = -1, 0
                     elif event.key == pygame.K_s: dr, dc = 1, 0
                     elif event.key == pygame.K_a: dr, dc = 0, -1
                     elif event.key == pygame.K_d: dr, dc = 0, 1
-                    elif event.key == pygame.K_q: 
+                    elif event.key == pygame.K_q:
                         robot.rotate(-1) # Left - decrease angle (CW)
-                    elif event.key == pygame.K_e: 
+                    elif event.key == pygame.K_e:
                         robot.rotate(1) # Right - increase angle (CW)
-                    
+
                     # Sensor Toggling (1-5)
                     elif event.key == pygame.K_1: robot.toggle_sensor(0)
                     elif event.key == pygame.K_2: robot.toggle_sensor(1)
@@ -549,11 +641,77 @@ def main():
         
         # Logic
         if not building_mode:
-            if moved:
-                prob_matrix = predict_motion(prob_matrix, dr, dc, wall_map)
-                
+            eff_dr, eff_dc, eff_moved = 0, 0, False
+            now = pygame.time.get_ticks()
+            auto_step_ready = (now - last_auto_step_ms) >= auto_step_delay
+
+            if auto_state == AUTO_LOCALIZING and auto_step_ready:
+                loc_spin_count, loc_move_count, eff_dr, eff_dc = \
+                    do_localization_step(robot, wall_map, loc_spin_count, loc_move_count)
+                eff_moved = (eff_dr != 0 or eff_dc != 0)
+                last_auto_step_ms = now
+
+            elif auto_state == AUTO_PLANNING:
+                est_r, est_c, _ = get_best_estimate(prob_matrix)
+                path = rrt((est_r, est_c, robot.angle_index), goal, wall_map)
+                if path and len(path) > 1:
+                    planned_path = list(path[1:])
+                    auto_state = AUTO_MOVING
+                    print(f"Path found: {len(planned_path)} steps to goal {goal}")
+                elif auto_state != AUTO_IDLE:
+                    print("RRT returned no path. Stopping auto mode.")
+                    auto_state = AUTO_IDLE
+
+            elif auto_state == AUTO_MOVING and auto_step_ready:
+                if not planned_path:
+                    if (robot.r, robot.c) == goal:
+                        auto_state = AUTO_DONE
+                        print("--- GOAL REACHED! ---")
+                    else:
+                        auto_state = AUTO_PLANNING
+                else:
+                    target_r, target_c = planned_path[0]
+                    step_dr = target_r - robot.r
+                    step_dc = target_c - robot.c
+                    required_angle = DIR_TO_ANGLE.get((step_dr, step_dc))
+                    if required_angle is not None and robot.angle_index != required_angle:
+                        # Rotate one step toward the target heading (shortest arc)
+                        delta = (required_angle - robot.angle_index) % 8
+                        robot.rotate(1 if delta <= 4 else -1)
+                        last_auto_step_ms = now
+                    else:
+                        # Facing the right way — move forward
+                        if robot.move_rel(step_dr, step_dc, wall_map):
+                            eff_dr, eff_dc = step_dr, step_dc
+                            eff_moved = True
+                            last_auto_step_ms = now
+                        if robot.r == target_r and robot.c == target_c:
+                            planned_path.pop(0)
+
+            else:  # AUTO_IDLE or AUTO_DONE — manual control
+                eff_dr, eff_dc = dr, dc
+                eff_moved = moved
+
+            if eff_moved:
+                prob_matrix = predict_motion(prob_matrix, eff_dr, eff_dc, wall_map)
+
             dists, hit_points = robot.measure(wall_map)
             prob_matrix = update_probability(prob_matrix, dists, expected_data, robot.angle_index)
+
+            # Post-update auto state transitions
+            if auto_state == AUTO_LOCALIZING:
+                _, _, peak = get_best_estimate(prob_matrix)
+                if peak >= LOCALIZATION_THRESHOLD:
+                    print(f"Localized! peak={peak:.3f}. Planning path to {goal}...")
+                    auto_state = AUTO_PLANNING
+                    loc_spin_count, loc_move_count = 0, 0
+            elif auto_state == AUTO_MOVING:
+                _, _, peak = get_best_estimate(prob_matrix)
+                if peak < IS_LOST_THRESHOLD:
+                    print(f"Lost (peak={peak:.3f}). Re-localizing...")
+                    auto_state = AUTO_LOCALIZING
+                    loc_spin_count, loc_move_count = 0, 0
+                    planned_path = []
         else:
             dists, hit_points = robot.measure(wall_map)
 
@@ -574,7 +732,14 @@ def main():
                         s.set_alpha(150)
                         s.fill((b, 0, 0))
                         screen.blit(s, rect[:2])
-                
+
+                # Highlight goal cell
+                if (r, c) == goal:
+                    goal_s = pygame.Surface((GRID_SIZE, GRID_SIZE))
+                    goal_s.set_alpha(180)
+                    goal_s.fill(YELLOW)
+                    screen.blit(goal_s, rect[:2])
+
                 # Draw Grid
                 grid_col = (60, 60, 0) if building_mode else (30, 30, 30)
                 pygame.draw.rect(screen, grid_col, rect, 1)
@@ -612,6 +777,16 @@ def main():
             pygame.draw.line(screen, GREEN, (robot.true_x, robot.true_y), p, 1)
             pygame.draw.circle(screen, GREEN, (int(p[0]), int(p[1])), 2)
 
+        # Draw planned path
+        if planned_path:
+            prev_px, prev_py = int(robot.true_x), int(robot.true_y)
+            for wp_r, wp_c in planned_path:
+                wp_x = int(wp_c * GRID_SIZE + GRID_SIZE // 2)
+                wp_y = int(wp_r * GRID_SIZE + GRID_SIZE // 2)
+                pygame.draw.line(screen, ORANGE, (prev_px, prev_py), (wp_x, wp_y), 2)
+                pygame.draw.circle(screen, ORANGE, (wp_x, wp_y), 3)
+                prev_px, prev_py = wp_x, wp_y
+
         # --- Draw Sidebar (Diagnostics) ---
         sidebar_rect = pygame.Rect(MAP_WIDTH, 0, SIDEBAR_WIDTH, MAP_HEIGHT)
         pygame.draw.rect(screen, SIDEBAR_BG, sidebar_rect)
@@ -628,6 +803,12 @@ def main():
         elif building_mode:
             mode_txt = "BUILDER MODE"
             mode_col = YELLOW
+        elif auto_state == AUTO_DONE:
+            mode_txt = "GOAL REACHED!"
+            mode_col = GREEN
+        elif auto_state != AUTO_IDLE:
+            mode_txt = f"AUTO: {AUTO_STATE_LABELS[auto_state]}"
+            mode_col = ORANGE
         else:
             mode_txt = "SIMULATION MODE"
             mode_col = GREEN
@@ -639,13 +820,24 @@ def main():
         screen.blit(small_font.render("P: Toggle Analysis", True, WHITE), (x_start, y_off)); y_off += 20
         
         if building_mode:
-             screen.blit(small_font.render("Click Edges: Toggle Wall", True, YELLOW), (x_start, y_off)); y_off += 30
+            screen.blit(small_font.render("Click Edges: Toggle Wall", True, YELLOW), (x_start, y_off)); y_off += 30
         elif analysis_mode:
-             screen.blit(small_font.render("Click Cells: Select/Deselect", True, CYAN), (x_start, y_off)); y_off += 20
-             screen.blit(small_font.render("Press P again to Dump Data", True, CYAN), (x_start, y_off)); y_off += 30
+            screen.blit(small_font.render("Click Cells: Select/Deselect", True, CYAN), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render("Press P again to Dump Data", True, CYAN), (x_start, y_off)); y_off += 30
+        elif auto_state == AUTO_DONE:
+            screen.blit(small_font.render(f"Goal {goal} reached!", True, GREEN), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render("R: Run Auto Again", True, WHITE), (x_start, y_off)); y_off += 30
+        elif auto_state != AUTO_IDLE:
+            screen.blit(small_font.render(f"Goal: row={goal[0]} col={goal[1]}", True, YELLOW), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render(f"Path: {len(planned_path)} steps left", True, WHITE), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render(f"Step delay: {auto_step_delay}ms  [ / ]", True, WHITE), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render("R: Stop Auto", True, ORANGE), (x_start, y_off)); y_off += 30
         else:
             screen.blit(small_font.render("WASD: Move  |  Q/E: Rotate", True, WHITE), (x_start, y_off)); y_off += 20
-            screen.blit(small_font.render("Mouse: Teleport", True, WHITE), (x_start, y_off)); y_off += 30
+            screen.blit(small_font.render("LClick: Teleport", True, WHITE), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render(f"RClick: Set Goal {goal}", True, YELLOW), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render(f"Step delay: {auto_step_delay}ms  [ / ]", True, WHITE), (x_start, y_off)); y_off += 20
+            screen.blit(small_font.render("R: Run Auto", True, WHITE), (x_start, y_off)); y_off += 30
         
         # Sensor Status
         screen.blit(font.render("SENSORS (Keys 1-5)", True, GREEN), (x_start, y_off)); y_off += 25
