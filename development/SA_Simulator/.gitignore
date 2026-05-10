@@ -2,3 +2,6 @@ __pycache__/
 
 # Local Python venv (DO NOT COMMIT)
 robot_sim/
+
+# Archived demo outputs
+old_demo_results/
