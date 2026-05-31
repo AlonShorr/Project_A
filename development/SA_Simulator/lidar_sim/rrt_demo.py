@@ -105,9 +105,9 @@ def build_fallback_wall_map():
 
 
 def load_wall_map():
-    from lidar_pygame_sim import generate_wall_map
+    from map_builder import generate_wall_map
 
-    return generate_wall_map(), "real Pygame simulator map", "lidar_pygame_sim.generate_wall_map"
+    return generate_wall_map(), "real Pygame simulator map", "map_builder.generate_wall_map"
 
 
 def require_robot_sim_venv():

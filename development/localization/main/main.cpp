@@ -531,27 +531,27 @@ extern "C" void app_main()
             last_print = millis();
         }
 
-        // pid loop
-        // pid_args.sensors_available = true;
-        // if (alg_pos)
-        // {
-        //     const auto &next_pos = *alg_pos;
-        //     pid_args.target_pos = next_pos;
-        //     const auto x_err = unit_cast<millimeters>((next_pos.x - pid_args.pos.x).get());
-        //     const auto y_err = unit_cast<millimeters>((next_pos.y - pid_args.pos.y).get());
-        //     const auto pos_angle_err = next_pos.theta - pid_args.pos.theta;
-        //     const auto next_direction = to_closest_direction(next_pos.theta);
-        //     if (std::abs(pos_angle_err.get()) <= max_diff_angle.get()
-        //         && abs(is_vertical(next_direction) ? y_err : x_err) <= max_diff_distance)
-        //     {
-        //         pid_args.pos = next_pos;  // snap
-        //         alg_pos = algorithm.get_next();
-        //         led_state = !led_state;
-        //         digitalWrite(led_pin, led_state);
-        //     }
-        // }
-        // else
-        // {
+        pid loop
+        pid_args.sensors_available = true;
+        if (alg_pos)
+        {
+            const auto &next_pos = *alg_pos;
+            pid_args.target_pos = next_pos;
+            const auto x_err = unit_cast<millimeters>((next_pos.x - pid_args.pos.x).get());
+            const auto y_err = unit_cast<millimeters>((next_pos.y - pid_args.pos.y).get());
+            const auto pos_angle_err = next_pos.theta - pid_args.pos.theta;
+            const auto next_direction = to_closest_direction(next_pos.theta);
+            if (std::abs(pos_angle_err.get()) <= max_diff_angle.get()
+                && abs(is_vertical(next_direction) ? y_err : x_err) <= max_diff_distance)
+            {
+                pid_args.pos = next_pos;  // snap
+                alg_pos = algorithm.get_next();
+                led_state = !led_state;
+                digitalWrite(led_pin, led_state);
+            }
+        }
+        else
+        {
         //     pid_caller.stop();
         //     pid_args.left.motor.set_pwm(0.0f);
         //     pid_args.right.motor.set_pwm(0.0f);
