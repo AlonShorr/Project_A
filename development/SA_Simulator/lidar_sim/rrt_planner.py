@@ -62,6 +62,18 @@ class _Node:
     cost: float
 
 
+def _empty_rrt_stats() -> dict[str, Any]:
+    return {
+        "duplicate_states_rejected": 0,
+        "invalid_forward_moves": 0,
+        "invalid_wall_collisions": 0,
+        "invalid_out_of_bounds": 0,
+        "diagonal_forward_blocks": 0,
+        "goal_samples": 0,
+        "successful_expansions": 0,
+    }
+
+
 def _map_shape(wall_map: Any) -> tuple[int, int]:
     if not hasattr(wall_map, "shape"):
         rows = len(wall_map)
@@ -118,6 +130,25 @@ def can_move_forward(wall_map: Any, state: tuple[int, int, int]) -> bool:
     if not (0 <= nr < rows and 0 <= nc < cols):
         return False
     return int(wall_map[r][c][wall_idx]) == 1
+
+
+def _forward_block_reason(wall_map: Any, state: tuple[int, int, int]) -> str:
+    if not is_state_valid(wall_map, state):
+        return "invalid_state"
+
+    move = theta_to_cardinal_move(state[2])
+    if move is None:
+        return "diagonal_heading"
+
+    rows, cols = _map_shape(wall_map)
+    r, c, _ = state
+    dr, dc, wall_idx = move
+    nr, nc = r + dr, c + dc
+    if not (0 <= nr < rows and 0 <= nc < cols):
+        return "outside_map"
+    if int(wall_map[r][c][wall_idx]) != 1:
+        return "wall"
+    return "open"
 
 
 def apply_internal_action(
@@ -243,6 +274,49 @@ def _step_is_valid(wall_map: Any, a: tuple[int, int], b: tuple[int, int]) -> boo
     return can_move_forward(wall_map, state)
 
 
+def bfs_shortest_path_cells(
+    wall_map: Any,
+    start_cell: tuple[int, int],
+    goal_cell: tuple[int, int],
+) -> Optional[list[tuple[int, int]]]:
+    """Return shortest cells from start to goal, inclusive, or None."""
+    rows, cols = _map_shape(wall_map)
+    start_cell = (int(start_cell[0]), int(start_cell[1]))
+    goal_cell = (int(goal_cell[0]), int(goal_cell[1]))
+    if not (0 <= start_cell[0] < rows and 0 <= start_cell[1] < cols):
+        return None
+    if not (0 <= goal_cell[0] < rows and 0 <= goal_cell[1] < cols):
+        return None
+
+    queue = deque([start_cell])
+    parent = {start_cell: None}
+    while queue:
+        cell = queue.popleft()
+        if cell == goal_cell:
+            break
+        r, c = cell
+        for theta_idx in (0, 2, 4, 6):
+            if not can_move_forward(wall_map, (r, c, theta_idx)):
+                continue
+            dr, dc, _ = THETA_TO_MOVE[theta_idx]
+            nxt = (r + dr, c + dc)
+            if nxt in parent:
+                continue
+            parent[nxt] = cell
+            queue.append(nxt)
+
+    if goal_cell not in parent:
+        return None
+
+    path = []
+    cell = goal_cell
+    while cell is not None:
+        path.append(cell)
+        cell = parent[cell]
+    path.reverse()
+    return path
+
+
 def validate_path(
     wall_map: Any,
     start: tuple[int, ...],
@@ -288,36 +362,8 @@ def _shortest_cell_path(
     goal_cell: tuple[int, int],
 ) -> list[tuple[int, int]]:
     """Return shortest cell waypoints excluding ``start_cell``."""
-    if start_cell == goal_cell:
-        return []
-
-    queue = deque([start_cell])
-    parent = {start_cell: None}
-    while queue:
-        cell = queue.popleft()
-        if cell == goal_cell:
-            break
-        r, c = cell
-        for theta_idx in (0, 2, 4, 6):
-            if not can_move_forward(wall_map, (r, c, theta_idx)):
-                continue
-            dr, dc, _ = THETA_TO_MOVE[theta_idx]
-            nxt = (r + dr, c + dc)
-            if nxt in parent:
-                continue
-            parent[nxt] = cell
-            queue.append(nxt)
-
-    if goal_cell not in parent:
-        return []
-
-    cells = []
-    cell = goal_cell
-    while cell is not None:
-        cells.append(cell)
-        cell = parent[cell]
-    cells.reverse()
-    return cells[1:]
+    path = bfs_shortest_path_cells(wall_map, start_cell, goal_cell)
+    return [] if path is None else path[1:]
 
 
 def _cell_path_to_state_path(
@@ -374,16 +420,88 @@ def _best_action_toward(
     return [(action, nxt) for _, action, nxt in candidates]
 
 
-def _make_failure(reason: str, iterations: int, num_nodes: int) -> dict[str, Any]:
+def _ranked_child_actions(
+    wall_map: Any,
+    state: tuple[int, int, int],
+    target: tuple[int, int, int],
+    rng: random.Random,
+    stats: dict[str, Any],
+) -> list[tuple[str, tuple[int, int, int]]]:
+    candidates = []
+    for action in INTERNAL_ACTIONS:
+        if action == FORWARD:
+            reason = _forward_block_reason(wall_map, state)
+            if reason != "open":
+                stats["invalid_forward_moves"] += 1
+                if reason == "diagonal_heading":
+                    stats["diagonal_forward_blocks"] += 1
+                elif reason == "outside_map":
+                    stats["invalid_out_of_bounds"] += 1
+                elif reason == "wall":
+                    stats["invalid_wall_collisions"] += 1
+                continue
+
+        nxt = apply_internal_action(wall_map, state, action)
+        if nxt is None:
+            continue
+        score = state_distance(nxt, target) + 0.001 * rng.random()
+        candidates.append((score, action, nxt))
+
+    candidates.sort(key=lambda item: item[0])
+    return [(action, nxt) for _, action, nxt in candidates]
+
+
+def _make_failure(
+    reason: str,
+    iterations: int,
+    num_nodes: int,
+    extra_debug: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    debug = {
+        "reason": reason,
+        "iterations": iterations,
+        "num_nodes": num_nodes,
+    }
+    if extra_debug:
+        debug.update(extra_debug)
     return {
         "success": False,
         "path": [],
         "path_with_theta": [],
-        "debug": {
-            "reason": reason,
-            "iterations": iterations,
-            "num_nodes": num_nodes,
-        },
+        "debug": debug,
+    }
+
+
+def _closest_node_to_goal(
+    nodes: list[_Node],
+    goal_cell: tuple[int, int],
+) -> tuple[tuple[int, int, int], float]:
+    closest = min(nodes, key=lambda node: math.hypot(node.state[0] - goal_cell[0], node.state[1] - goal_cell[1]))
+    dist = math.hypot(closest.state[0] - goal_cell[0], closest.state[1] - goal_cell[1])
+    return closest.state, dist
+
+
+def _success_result(
+    wall_map: Any,
+    start_state: tuple[int, int, int],
+    goal_state: tuple[int, int, int],
+    goal_theta: Optional[int],
+    path: list[tuple[int, int]],
+    state_path: list[tuple[int, int, int]],
+    debug: dict[str, Any],
+) -> dict[str, Any]:
+    valid, reason = validate_path(wall_map, start_state, goal_state, path)
+    if not valid:
+        return _make_failure(f"constructed path failed validation: {reason}", debug.get("iterations", 0), debug.get("num_nodes", 0), debug)
+
+    debug_actions = state_path_to_debug_actions(state_path)
+    debug["debug_actions"] = debug_actions
+    debug["path_cost"] = _cell_path_cost([start_state[:2]] + path)
+    return {
+        "success": True,
+        "path": path,
+        "path_with_theta": state_path[1:],
+        "debug": debug,
     }
 
 
@@ -397,6 +515,7 @@ def plan_rrt(
     goal_sample_rate: float = 0.15,
     random_seed: Optional[int] = None,
     return_debug: bool = True,
+    fallback_to_bfs: bool = False,
 ) -> dict[str, Any]:
     """Compute a waypoint path from localized start to goal.
 
@@ -416,6 +535,11 @@ def plan_rrt(
     if not is_state_valid(wall_map, goal_state):
         return _make_failure("goal is outside the map", 0, 0)
 
+    rows, cols = _map_shape(wall_map)
+    bfs_path = bfs_shortest_path_cells(wall_map, start_state[:2], goal_state[:2])
+    bfs_reachable = bfs_path is not None
+    bfs_length = None if bfs_path is None else max(0, len(bfs_path) - 1)
+
     rng = random.Random(random_seed)
     nodes = [_Node(start_state, None, None, 0.0)]
     seen = {start_state}
@@ -423,12 +547,30 @@ def plan_rrt(
     best_goal_idx = None
     best_goal_cost = math.inf
     goal_cell = goal_state[:2]
+    stats = _empty_rrt_stats()
 
     for iteration in range(1, max_iter + 1):
-        target = goal_state if rng.random() < goal_sample_rate else sample_state(wall_map, rng)
-        near_idx = nearest_node(nodes, target)
-        ranked_actions = _best_action_toward(wall_map, nodes[near_idx].state, target, rng)
-        next_step = next(((action, state) for action, state in ranked_actions if state not in seen), None)
+        if rng.random() < goal_sample_rate:
+            target = goal_state
+            stats["goal_samples"] += 1
+        else:
+            target = sample_state(wall_map, rng)
+
+        ranked_node_indices = sorted(range(len(nodes)), key=lambda idx: state_distance(nodes[idx].state, target))[:32]
+        next_step = None
+        near_idx = None
+        for candidate_idx in ranked_node_indices:
+            ranked_actions = _ranked_child_actions(wall_map, nodes[candidate_idx].state, target, rng, stats)
+            for action, state in ranked_actions:
+                if state in seen:
+                    stats["duplicate_states_rejected"] += 1
+                    continue
+                next_step = (action, state)
+                near_idx = candidate_idx
+                break
+            if next_step is not None:
+                break
+
         if next_step is None:
             continue
         action, new_state = next_step
@@ -437,6 +579,7 @@ def plan_rrt(
         nodes.append(_Node(new_state, near_idx, action, new_cost))
         new_idx = len(nodes) - 1
         seen.add(new_state)
+        stats["successful_expansions"] += 1
         if return_debug:
             tree_edges.append((nodes[near_idx].state, new_state))
 
@@ -446,13 +589,43 @@ def plan_rrt(
             best_goal_idx = new_idx
             best_goal_cost = new_cost
 
-            # Keep a little time for a shorter route, but return promptly once
-            # a good route has had a chance to appear.
-            if iteration > min(80, max_iter // 5):
-                break
+        # Keep a little time for a shorter route, but return promptly once a
+        # valid route has had a chance to appear.
+        if best_goal_idx is not None and iteration > min(80, max_iter // 5):
+            break
 
     if best_goal_idx is None:
-        return _make_failure("max_iter reached without connecting to goal", max_iter, len(nodes))
+        closest_state, closest_dist = _closest_node_to_goal(nodes, goal_cell)
+        failure_debug = {
+            "map_shape": (rows, cols, 4),
+            "start_state": start_state,
+            "goal_state": goal_state,
+            "goal_cell": goal_cell,
+            "unique_states_in_tree": len(seen),
+            "total_possible_states": rows * cols * 8,
+            "closest_node_to_goal": closest_state,
+            "closest_distance_to_goal": closest_dist,
+            "tree_edges": tree_edges if return_debug else [],
+            "bfs_reachable": bfs_reachable,
+            "bfs_shortest_path_length": bfs_length,
+            **stats,
+        }
+        if fallback_to_bfs and bfs_path is not None:
+            path = bfs_path[1:]
+            state_path = _cell_path_to_state_path(start_state, path, goal_theta)
+            failure_debug.update(
+                {
+                    "reason": "RRT failed, BFS fallback used",
+                    "path_source": "bfs_fallback",
+                    "iterations": max_iter,
+                    "num_nodes": len(nodes),
+                    "raw_rrt_path": [],
+                    "raw_rrt_path_with_theta": [],
+                }
+            )
+            return _success_result(wall_map, start_state, goal_state, goal_theta, path, state_path, failure_debug)
+
+        return _make_failure("max_iter reached without connecting to goal", max_iter, len(nodes), failure_debug)
 
     state_path = reconstruct_state_path(nodes, best_goal_idx)
     path = state_path_to_cell_path(state_path)
@@ -469,24 +642,25 @@ def plan_rrt(
         state_path = _cell_path_to_state_path(start_state, path, goal_theta)
         path_source = "shortest_valid_postprocess"
 
-    debug_actions = state_path_to_debug_actions(state_path)
     debug = {
         "iterations": iteration,
         "num_nodes": len(nodes),
         "reason": "goal reached",
         "tree_edges": tree_edges if return_debug else [],
-        "debug_actions": debug_actions,
-        "path_cost": _cell_path_cost([start_state[:2]] + path),
         "path_source": path_source,
         "raw_rrt_path": raw_rrt_path,
         "raw_rrt_path_with_theta": raw_rrt_path_with_theta,
+        "map_shape": (rows, cols, 4),
+        "start_state": start_state,
+        "goal_state": goal_state,
+        "goal_cell": goal_cell,
+        "unique_states_in_tree": len(seen),
+        "total_possible_states": rows * cols * 8,
+        "bfs_reachable": bfs_reachable,
+        "bfs_shortest_path_length": bfs_length,
+        **stats,
     }
-    return {
-        "success": True,
-        "path": path,
-        "path_with_theta": state_path[1:],
-        "debug": debug,
-    }
+    return _success_result(wall_map, start_state, goal_state, goal_theta, path, state_path, debug)
 
 
 def cell_to_world(r: int, c: int, cell_size_m: float = 0.18) -> tuple[float, float]:
