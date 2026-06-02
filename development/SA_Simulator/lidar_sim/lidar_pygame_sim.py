@@ -18,7 +18,7 @@ from localization import (
     get_best_estimate,
     do_localization_step,
 )
-from motion_planning import rrt
+from motion_planning import plan_path
 from map_builder import generate_wall_map, toggle_wall_click, dump_selected_cells
 
 
@@ -163,13 +163,13 @@ def main():
 
             elif auto_state == AUTO_PLANNING:
                 est_r, est_c, _ = get_best_estimate(prob_matrix)
-                path = rrt((est_r, est_c, robot.angle_index), goal, wall_map)
+                path = plan_path((est_r, est_c, robot.angle_index), goal, wall_map)
                 if path and len(path) > 1:
                     planned_path = list(path[1:])
                     auto_state = AUTO_MOVING
                     print(f"Path found: {len(planned_path)} steps to goal {goal}")
                 elif auto_state != AUTO_IDLE:
-                    print("RRT returned no path. Stopping auto mode.")
+                    print("A* returned no path. Stopping auto mode.")
                     auto_state = AUTO_IDLE
 
             elif auto_state == AUTO_MOVING and auto_step_ready:
