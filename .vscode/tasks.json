@@ -78,6 +78,18 @@
       "options": {
         "cwd": "${workspaceFolder:Project_A (root)}"
       }
+    },
+    {
+      "label": "SA Simulator: Run RRT demo",
+      "type": "shell",
+      "command": "${workspaceFolder:Project_A (root)}/development/SA_Simulator/robot_sim/bin/python",
+      "args": [
+        "rrt_demo.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder:Project_A (root)}/development/SA_Simulator"
+      },
+      "problemMatcher": []
     }
   ],
   "inputs": [
