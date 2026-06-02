@@ -16,8 +16,8 @@ from localization import (
     update_probability,
     predict_motion,
     get_best_estimate,
-    do_localization_step,
 )
+from active_localization import select_best_action, apply_action_to_robot
 from motion_planning import plan_path
 from map_builder import generate_wall_map, toggle_wall_click, dump_selected_cells
 
@@ -46,8 +46,7 @@ def main():
     AUTO_STATE_LABELS = {0: "IDLE", 1: "LOCALIZING", 2: "PLANNING", 3: "MOVING", 4: "DONE"}
     auto_state = AUTO_IDLE
     planned_path = []
-    loc_spin_count = 0
-    loc_move_count = 0
+    active_loc_action = None
     auto_step_delay = AUTO_STEP_DELAY
     last_auto_step_ms = 0
     goal = GOAL
@@ -119,7 +118,7 @@ def main():
                 if event.key == pygame.K_r and not building_mode and not analysis_mode:
                     if auto_state in (AUTO_IDLE, AUTO_DONE):
                         auto_state = AUTO_LOCALIZING
-                        loc_spin_count, loc_move_count = 0, 0
+                        active_loc_action = None
                         planned_path = []
                         print("--- AUTO MODE STARTED: Localizing... ---")
                     else:
@@ -156,10 +155,21 @@ def main():
             auto_step_ready = (now - last_auto_step_ms) >= auto_step_delay
 
             if auto_state == AUTO_LOCALIZING and auto_step_ready:
-                loc_spin_count, loc_move_count, eff_dr, eff_dc = \
-                    do_localization_step(robot, wall_map, loc_spin_count, loc_move_count)
-                eff_moved = (eff_dr != 0 or eff_dc != 0)
-                last_auto_step_ms = now
+                if active_loc_action is None:
+                    result = select_best_action(
+                        prob_matrix, expected_data, wall_map, robot.angle_index
+                    )
+                    active_loc_action = result["action"]
+                    if active_loc_action is not None:
+                        print("Active loc:", result["reason"])
+                if active_loc_action is None:
+                    auto_state = AUTO_PLANNING  # belief already localized
+                else:
+                    eff_dr, eff_dc = apply_action_to_robot(robot, active_loc_action, wall_map)
+                    eff_moved = (eff_dr != 0 or eff_dc != 0)
+                    if robot.angle_index == active_loc_action.heading:
+                        active_loc_action = None  # action complete, re-select next step
+                    last_auto_step_ms = now
 
             elif auto_state == AUTO_PLANNING:
                 est_r, est_c, _ = get_best_estimate(prob_matrix)
@@ -211,13 +221,13 @@ def main():
                 if peak >= LOCALIZATION_THRESHOLD:
                     print(f"Localized! peak={peak:.3f}. Planning path to {goal}...")
                     auto_state = AUTO_PLANNING
-                    loc_spin_count, loc_move_count = 0, 0
+                    active_loc_action = None
             elif auto_state == AUTO_MOVING:
                 _, _, peak = get_best_estimate(prob_matrix)
                 if peak < IS_LOST_THRESHOLD:
                     print(f"Lost (peak={peak:.3f}). Re-localizing...")
                     auto_state = AUTO_LOCALIZING
-                    loc_spin_count, loc_move_count = 0, 0
+                    active_loc_action = None
                     planned_path = []
         else:
             dists, hit_points = robot.measure(wall_map)

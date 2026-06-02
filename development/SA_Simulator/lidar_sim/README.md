@@ -1,6 +1,6 @@
 # Lidar Pygame Simulator
 
-A grid-based simulator for developing and testing a probabilistic localization and autonomous navigation system. The robot carries five ToF (Time-of-Flight) distance sensors and uses a Bayes filter to estimate its position on the map, then plans a path to a goal using RRT.
+A grid-based simulator for developing and testing a probabilistic localization and autonomous navigation system. The robot carries five ToF (Time-of-Flight) distance sensors and uses a Bayes filter to estimate its position on the map, then plans an optimal path to a goal using A*.
 
 ---
 
@@ -39,9 +39,11 @@ lidar_sim/
 ├── sim_robot.py         # Robot class (sensors, movement, ray-casting)
 ├── map_builder.py       # Map definition, wall editing, debug data dump
 ├── localization.py      # Bayes filter localization algorithm
-├── motion_planning.py   # RRT path planning wrapper
-├── rrt_planner.py       # Standalone RRT planner implementation
-├── rrt_demo.py          # Console verification script for the RRT planner
+├── active_localization.py # Information-gain action selection for localization
+├── motion_planning.py   # A* path planning wrapper
+├── astar_planner.py     # Standalone A* planner implementation
+├── rrt_planner.py       # Grid utilities: BFS, path validation, wall helpers
+├── rrt_demo.py          # Console verification script for the planner
 ├── lidar_pygame_sim.py  # Main entry point — pygame loop, rendering, and input
 └── requirements.txt     # Python dependencies
 ```
@@ -99,30 +101,66 @@ Implements the probabilistic localization pipeline (histogram/Bayes filter).
 
 **Blur kernel:** The motion blur distributes 40% of each cell's mass to itself, 10% to each cardinal neighbor, and 5% to each diagonal neighbor, then re-normalizes. This prevents the filter from becoming overconfident after movement.
 
+### `active_localization.py`
+Replaces the old spin-then-random-walk recovery with an information-theoretic policy. When the robot is lost or its belief is multimodal, passive re-measurement cannot break the tie — every competing hypothesis predicts the same reading, so the belief stays stuck. Active localization deliberately picks the action whose *expected* observation differs most across the competing hypotheses, collapsing the belief as fast as possible.
+
+**Theory.** The belief's uncertainty is measured by Shannon entropy (in nats):
+
+```
+H(Bel) = -sum_x Bel(x) * ln Bel(x)
+```
+
+A fully localized belief has H ≈ 0; k equiprobable cells give H = ln k. For each candidate action `a`, the policy:
+1. Runs the motion model to get the predicted belief `Bel^-` (moves use `predict_motion`; rotations leave the belief unchanged).
+2. For each of the top-K most probable hypotheses `x'`, looks up the noiseless sensor reading the robot would get if it were truly at `x'` (from `expected_data`), runs the Bayes correction, and measures the resulting entropy.
+3. Averages those entropies weighted by `Bel^-(x')` to get `E[H | a]`.
+4. Chooses `a* = argmax_a [ H(Bel) - E[H|a] - cost(a) ]`.
+
+Costs are in nats so they trade off directly against information gain. Defaults are small, so during the lost phase information dominates.
+
+| Function | Description |
+|---|---|
+| `select_best_action(belief, expected_data, wall_map, heading)` | Scores all 11 candidate actions and returns the best one plus diagnostics |
+| `apply_action_to_robot(robot, action, wall_map)` | Executes one frame of an action: one 45° turn toward the target heading, or the forward step once aligned. Returns `(dr, dc)` moved. |
+| `belief_entropy(belief)` | Shannon entropy of a probability matrix, in nats |
+| `information_gain(belief, action, ...)` | Expected entropy reduction for a single candidate action |
+
+The pygame loop calls `select_best_action` once per completed action to pick the next one, and `apply_action_to_robot` every frame to execute it step by step.
+
 ### `motion_planning.py`
-A thin wrapper that calls into `rrt_planner.py` and returns a path in a format the simulator loop can directly consume.
+A thin wrapper that calls into `astar_planner.py` and returns a path in a format the simulator loop can directly consume.
 
 ```python
-path = rrt(start=(r, c, theta_idx), goal=(r, c), wall_map=wall_map)
+path = plan_path(start=(r, c, theta_idx), goal=(r, c), wall_map=wall_map)
 # Returns [(r0,c0), (r1,c1), ...] from start to goal inclusive,
 # or [] if no path was found.
 ```
 
-### `rrt_planner.py`
-Standalone RRT (Rapidly-exploring Random Tree) implementation. Has no dependency on pygame or the simulator state.
+### `astar_planner.py`
+Standalone A* planner implementation. Has no dependency on pygame or the simulator state.
 
 **Key design rule:** the planner outputs *waypoint positions* (`result["path"]`), not movement commands. The simulator's navigation loop is responsible for turning the robot toward each waypoint and stepping forward.
+
+The planner searches over `(r, c, theta_idx)` states. Action costs are 1.0 for a forward move, 0.25 for a 45° turn, and 0.5 for a 180° turn. The heuristic is Manhattan distance, which is admissible since every forward step costs ≥ 1.0. This guarantees the returned path is cost-optimal.
 
 Key functions:
 
 | Function | Description |
 |---|---|
-| `plan_rrt(wall_map, start, goal, ...)` | Main entry point — returns a result dict with `"path"`, `"path_with_theta"`, and `"debug"` |
-| `validate_path(wall_map, start, goal, path)` | Checks that every step in a path is adjacent and wall-free |
-| `path_cells_to_world(path)` | Converts `[(r,c), ...]` to physical `[(x_m, y_m), ...]` coordinates |
-| `choose_localization_improving_waypoint(belief, wall_map, pos)` | Suggests a nearby cell with a distinctive wall signature to improve localization |
+| `plan_astar(wall_map, start, goal, ...)` | Main entry point — returns a result dict with `"path"`, `"path_with_theta"`, and `"debug"` |
+| `path_cells_to_world(path)` | Converts `[(r,c), ...]` to physical `[(x_m, y_m), ...]` coordinates (re-exported from `rrt_planner`) |
 
-The planner internally works in `(r, c, theta_idx)` state space. After finding a path, it runs a BFS post-process to replace the RRT path with the shortest valid cell path if that is cheaper.
+### `rrt_planner.py`
+Grid utility library shared by the planner and other modules. Has no dependency on pygame.
+
+Key functions:
+
+| Function | Description |
+|---|---|
+| `bfs_shortest_path_cells(wall_map, start, goal)` | BFS shortest path between two cells; used for reachability checks |
+| `validate_path(wall_map, start, goal, path)` | Checks that every step in a path is adjacent and wall-free |
+| `can_move_forward(wall_map, state)` | Returns whether a forward step from `(r, c, theta)` is unblocked |
+| `choose_localization_improving_waypoint(belief, wall_map, pos)` | Suggests a nearby cell with a distinctive wall signature to improve localization |
 
 ### `lidar_pygame_sim.py`
 Entry point. Contains `main()` and nothing else — all logic lives in the modules above.
@@ -130,7 +168,7 @@ Entry point. Contains `main()` and nothing else — all logic lives in the modul
 Responsibilities:
 - Initialize pygame, fonts, and display
 - Run the event loop (keyboard, mouse)
-- Dispatch to `do_localization_step`, `rrt`, `predict_motion`, `update_probability` at the right times
+- Dispatch to `select_best_action`, `apply_action_to_robot`, `plan_path`, `predict_motion`, `update_probability` at the right times
 - Manage the auto-mode state machine (`IDLE → LOCALIZING → PLANNING → MOVING → DONE`)
 - Draw the map, probability heatmap, robot, sensor rays, planned path, and sidebar
 
@@ -156,7 +194,13 @@ Responsibilities:
 │         ▼                                                   │
 │    get_best_estimate(prob)                                  │
 │         │                                                   │
-│         ├─ peak ≥ threshold ──► rrt(start, goal, wall_map)  │
+│         ├─ peak < threshold ──► select_best_action(belief)   │
+│         │                           │                       │
+│         │                           ▼                       │
+│         │                    apply_action_to_robot()        │
+│         │                    (one frame: turn or move)      │
+│         │                                                   │
+│         ├─ peak ≥ threshold ──► plan_path(start, goal, map) │
 │         │                           │                       │
 │         │                           ▼                       │
 │         │                      planned_path[]               │
@@ -200,4 +244,4 @@ Angle index `0` points East; indices increase clockwise at 45° steps.
 | 6 | North |
 | 7 | North-East |
 
-The RRT planner only moves on cardinal headings (0, 2, 4, 6). Diagonal headings are used only for rotation.
+The A* planner only moves on cardinal headings (0, 2, 4, 6). Diagonal headings are used only for rotation.
