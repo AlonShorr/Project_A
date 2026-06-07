@@ -78,7 +78,7 @@ from config import (
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
     DIR_TO_ANGLE,
 )
-from localization import predict_motion, update_probability
+from localization import predict_forward, predict_turn, update_probability
 
 # Cardinal moves the simulator/RRT planner uses, paired with the wall flag that
 # blocks them and the resulting heading index. (dr, dc) -> (wall_idx, heading).
@@ -104,6 +104,8 @@ class Action:
             robot will observe after the action.
         n_turns: Number of 45-degree rotation steps needed to reach ``heading``
             from the current heading (shortest direction).
+        turn_direction: +1 clockwise or -1 counter-clockwise for the shortest
+            turn sequence to ``heading``.
         label: Human-readable description for logging.
     """
 
@@ -112,6 +114,7 @@ class Action:
     dc: int
     heading: int
     n_turns: int
+    turn_direction: int
     label: str
 
 
@@ -149,23 +152,26 @@ def _top_hypotheses(
     belief: np.ndarray,
     prob_floor: float,
     max_hypotheses: int,
-) -> list[tuple[int, int, float]]:
-    """Return the most probable cells as ``(row, col, weight)``, weight-sorted.
+) -> list[tuple[int, int, int, float]]:
+    """Return the most probable states as ``(row, col, theta, weight)``.
 
     Only these "competing hypotheses" matter for breaking a multimodal belief,
     so restricting the expected-entropy average to the top-K keeps the policy
     fast without changing its decisions in the cases it is meant for.
     """
     flat = np.asarray(belief, dtype=float).ravel()
-    cols = belief.shape[1]
     order = np.argsort(flat)[::-1]
-    out: list[tuple[int, int, float]] = []
+    out: list[tuple[int, int, int, float]] = []
     for idx in order:
         w = float(flat[idx])
         if w < prob_floor:
             break
-        r, c = divmod(int(idx), cols)
-        out.append((r, c, w))
+        if belief.ndim == 3:
+            r, c, theta = np.unravel_index(int(idx), belief.shape)
+        else:
+            r, c = divmod(int(idx), belief.shape[1])
+            theta = 0
+        out.append((int(r), int(c), int(theta), w))
         if len(out) >= max_hypotheses:
             break
     return out
@@ -205,14 +211,14 @@ def expected_entropy_after_action(
 
     weighted_entropy = 0.0
     weight_sum = 0.0
-    for r, c, w in hypotheses:
-        # The reading the robot would get if it truly were at (r, c) facing
-        # observe_heading. Shape (n_sensors,); update_probability indexes it
-        # positionally, so a plain float vector is exactly what it expects.
-        hypothetical_reading = expected_data[r, c, observe_heading]
-        posterior = update_probability(
-            predicted_belief, hypothetical_reading, expected_data, observe_heading
-        )
+    for r, c, theta, w in hypotheses:
+        hypothetical_reading = expected_data[r, c, theta if predicted_belief.ndim == 3 else observe_heading]
+        if predicted_belief.ndim == 3:
+            posterior = update_probability(predicted_belief, hypothetical_reading, expected_data)
+        else:
+            posterior = update_probability(
+                predicted_belief, hypothetical_reading, expected_data, observe_heading
+            )
         weighted_entropy += w * belief_entropy(posterior)
         weight_sum += w
 
@@ -240,10 +246,12 @@ def information_gain(
     """
     current_entropy = belief_entropy(belief)
 
+    predicted = belief
+    for _ in range(action.n_turns):
+        predicted = predict_turn(predicted, action.turn_direction, noisy=True)
+
     if action.kind == "move":
-        predicted = predict_motion(belief, action.dr, action.dc, wall_map)
-    else:  # rotate in place: identity motion model
-        predicted = belief
+        predicted = predict_forward(predicted, wall_map, noisy=True)
 
     expected = expected_entropy_after_action(
         predicted, action.heading, expected_data, prob_floor, max_hypotheses
@@ -264,6 +272,7 @@ def _enumerate_actions(current_heading: int) -> list[Action]:
     for heading in range(_N_HEADINGS):
         if heading == current_heading:
             continue
+        delta = (heading - current_heading) % _N_HEADINGS
         actions.append(
             Action(
                 kind="rotate",
@@ -271,11 +280,13 @@ def _enumerate_actions(current_heading: int) -> list[Action]:
                 dc=0,
                 heading=heading,
                 n_turns=_turn_steps(current_heading, heading),
+                turn_direction=1 if delta <= 4 else -1,
                 label=f"rotate to heading {heading} ({heading * 45} deg)",
             )
         )
 
     for (dr, dc), (_wall_idx, heading) in _CARDINAL_MOVES.items():
+        delta = (heading - current_heading) % _N_HEADINGS
         actions.append(
             Action(
                 kind="move",
@@ -283,6 +294,7 @@ def _enumerate_actions(current_heading: int) -> list[Action]:
                 dc=dc,
                 heading=heading,
                 n_turns=_turn_steps(current_heading, heading),
+                turn_direction=1 if delta <= 4 else -1,
                 label=f"move (dr={dr}, dc={dc}) facing heading {heading}",
             )
         )
@@ -374,7 +386,13 @@ def select_best_action(
     }
 
 
-def apply_action_to_robot(robot: Any, action: Optional[Action], wall_map: np.ndarray) -> tuple[int, int]:
+def apply_action_to_robot(
+    robot: Any,
+    action: Optional[Action],
+    wall_map: np.ndarray,
+    rng: Any = None,
+    noisy: bool = False,
+) -> tuple[int, int, Optional[str]]:
     """Convenience executor: turn the robot toward ``action`` and step if a move.
 
     Mirrors the one-action-per-frame style of ``do_localization_step`` so it can
@@ -388,21 +406,29 @@ def apply_action_to_robot(robot: Any, action: Optional[Action], wall_map: np.nda
         wall_map: Map array used by ``robot.move_rel`` for wall checking.
 
     Returns:
-        ``(dr, dc)`` actually moved this frame (``(0, 0)`` if only turned or
-        idle), so the caller can feed it to ``predict_motion``.
+        ``(dr, dc, commanded_action)`` for the frame.
     """
     if action is None:
-        return 0, 0
+        return 0, 0, None
 
     if robot.angle_index != action.heading:
         delta = (action.heading - robot.angle_index) % _N_HEADINGS
-        robot.rotate(1 if delta <= 4 else -1)
-        return 0, 0
+        direction = 1 if delta <= 4 else -1
+        command = "TURN_RIGHT" if direction > 0 else "TURN_LEFT"
+        if noisy and rng is not None:
+            robot.apply_action(command, wall_map, rng, noisy=True)
+        else:
+            robot.rotate(direction)
+        return 0, 0, command
 
     if action.kind == "move":
-        if robot.move_rel(action.dr, action.dc, wall_map):
-            return action.dr, action.dc
-    return 0, 0
+        old_r, old_c = robot.r, robot.c
+        if noisy and rng is not None:
+            robot.apply_action("FORWARD", wall_map, rng, noisy=True)
+        else:
+            robot.move_rel(action.dr, action.dc, wall_map)
+        return robot.r - old_r, robot.c - old_c, "FORWARD"
+    return 0, 0, None
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +438,7 @@ def apply_action_to_robot(robot: Any, action: Optional[Action], wall_map: np.nda
 def _demo() -> int:
     import numpy as _np
     from map_builder import generate_wall_map
-    from localization import precompute_all_orientations
+    from localization import initialize_belief, precompute_all_orientations
 
     wall_map = generate_wall_map()
     rows, cols, _ = wall_map.shape
@@ -428,18 +454,18 @@ def _demo() -> int:
 
     print("\n--- entropy sanity ---")
     k = 4
-    b = _np.zeros((rows, cols))
+    b = _np.zeros((rows, cols, _N_HEADINGS))
     cells = [(3, 3), (3, 5), (5, 3), (5, 5)]
     for (r, c) in cells:
-        b[r, c] = 1.0 / k
+        b[r, c, 0] = 1.0 / k
     check("uniform over k cells gives H = ln k",
           abs(belief_entropy(b) - _np.log(k)) < 1e-9)
-    spike = _np.zeros((rows, cols))
-    spike[7, 7] = 1.0
+    spike = _np.zeros((rows, cols, _N_HEADINGS))
+    spike[7, 7, 0] = 1.0
     check("a localized spike gives H ~ 0", belief_entropy(spike) < 1e-9)
 
     print("\n--- uniform belief: an action with positive gain exists ---")
-    uniform = _np.ones((rows, cols)) / (rows * cols)
+    uniform = initialize_belief(rows, cols)
     res = select_best_action(uniform, expected_data, wall_map, current_heading=2)
     print("  " + res["reason"])
     check("best action defined", res["action"] is not None)
@@ -450,9 +476,9 @@ def _demo() -> int:
     print("\n--- multimodal belief: policy reduces expected entropy ---")
     # Place equal mass on two interior cells and verify the chosen action is
     # expected to collapse the belief.
-    multi = _np.zeros((rows, cols))
+    multi = _np.zeros((rows, cols, _N_HEADINGS))
     for (r, c) in [(6, 6), (9, 12)]:
-        multi[r, c] = 0.5
+        multi[r, c, 0] = 0.5
     res2 = select_best_action(multi, expected_data, wall_map, current_heading=0)
     print("  " + res2["reason"])
     check("two-mode start entropy ~ ln 2",

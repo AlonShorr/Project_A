@@ -6,8 +6,24 @@ from config import (
     SENSOR_ANGLES, ROTATION_STEP,
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
     MIN_RANGE_MM, MAX_RANGE_MM, MIN_RANGE_PX, MAX_RANGE_PX,
-    PIXELS_PER_MM, SENSOR_ACCURACY_MM,
+    PIXELS_PER_MM, SENSOR_MEASUREMENT_SIGMA_MM,
 )
+from discrete_noise import (
+    forward_transition_probs,
+    sample_three_way,
+    turn_transition_probs,
+)
+
+ACTION_FORWARD = "FORWARD"
+ACTION_TURN_LEFT = "TURN_LEFT"
+ACTION_TURN_RIGHT = "TURN_RIGHT"
+
+THETA_TO_STEP = {
+    0: (0, 1),
+    2: (1, 0),
+    4: (0, -1),
+    6: (-1, 0),
+}
 
 
 class Robot:
@@ -57,6 +73,40 @@ class Robot:
 
         self.move_to(self.r + dr, self.c + dc)
         return True
+
+    def _move_forward_one_cell(self, wall_map):
+        step = THETA_TO_STEP.get(self.angle_index % 8)
+        if step is None:
+            return False
+        return self.move_rel(step[0], step[1], wall_map)
+
+    def rotate_noisy(self, direction, rng):
+        """Sample a discrete noisy turn outcome and update angle_index."""
+        outcome = sample_three_way(turn_transition_probs(noisy=True), rng)
+        steps = (0, 1, 2)[outcome]
+        self.angle_index = (self.angle_index + direction * steps) % 8
+        return steps
+
+    def move_forward_noisy(self, wall_map, rng):
+        """Sample a discrete noisy forward outcome and move up to two cells."""
+        outcome = sample_three_way(forward_transition_probs(noisy=True), rng)
+        steps = (0, 1, 2)[outcome]
+        moved = 0
+        for _ in range(steps):
+            if not self._move_forward_one_cell(wall_map):
+                break
+            moved += 1
+        return moved
+
+    def apply_action(self, action, wall_map, rng, noisy=True):
+        """Execute a discrete action on the true simulated robot."""
+        if action == ACTION_TURN_LEFT:
+            return self.rotate_noisy(-1, rng) if noisy else self.rotate(-1)
+        if action == ACTION_TURN_RIGHT:
+            return self.rotate_noisy(1, rng) if noisy else self.rotate(1)
+        if action == ACTION_FORWARD:
+            return self.move_forward_noisy(wall_map, rng) if noisy else self._move_forward_one_cell(wall_map)
+        raise ValueError(f"unknown action: {action}")
 
     def measure(self, wall_map, add_noise=False):
         """
@@ -114,7 +164,7 @@ class Robot:
             dist_mm = max(MIN_RANGE_MM, min(dist_mm, MAX_RANGE_MM))
 
             if add_noise and hit:
-                dist_mm = random.gauss(dist_mm, SENSOR_ACCURACY_MM)
+                dist_mm = random.gauss(dist_mm, SENSOR_MEASUREMENT_SIGMA_MM)
                 dist_mm = max(MIN_RANGE_MM, min(dist_mm, MAX_RANGE_MM))
 
             measurements.append(dist_mm)

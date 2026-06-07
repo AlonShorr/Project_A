@@ -21,6 +21,31 @@ MAX_RANGE_PX = MAX_RANGE_MM * PIXELS_PER_MM
 SENSOR_ANGLES = [-90, -40.33, 0, 37.22, 90]  # Relative to robot facing
 ROTATION_STEP = 45  # Degrees per Q/E press
 
+# --- Discrete stochastic noise model ---
+ENABLE_SENSOR_NOISE = True
+ENABLE_MOTION_NOISE = True
+RANDOM_SEED = 42
+
+# Forward movement model
+FORWARD_TARGET_MM = CELL_SIZE_MM
+FORWARD_TOLERANCE_MM = 45.0
+FORWARD_SIGMA_MM = 15.0
+FORWARD_BIAS_MM = 0.0
+
+# Turn model
+TURN_TARGET_DEG = ROTATION_STEP
+TURN_TOLERANCE_DEG = 10.0
+TURN_SIGMA_DEG = 4.0
+TURN_BIAS_DEG = 0.0
+
+# Sensor likelihood model
+SENSOR_LIKELIHOOD_SIGMA_MM = 20.0
+SENSOR_LIKELIHOOD_FLOOR = 1e-9
+SENSOR_LIKELIHOOD_POWER = 1.0
+
+# Optional actual measurement perturbation
+SENSOR_MEASUREMENT_SIGMA_MM = SENSOR_ACCURACY_MM
+
 # --- Wall indices (for wall_map array) ---
 # wall_map shape: (Rows, Cols, 4). Values: 0=Wall, 1=Open
 WALL_UP = 0

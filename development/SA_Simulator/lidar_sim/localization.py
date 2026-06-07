@@ -4,9 +4,30 @@ import random
 from config import (
     MAP_COLS, SENSOR_ANGLES, MIN_RANGE_MM,
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
-    LOCALIZATION_MOVES,
+    LOCALIZATION_MOVES, SENSOR_LIKELIHOOD_SIGMA_MM,
+    SENSOR_LIKELIHOOD_FLOOR, SENSOR_LIKELIHOOD_POWER,
 )
+from discrete_noise import forward_transition_probs, turn_transition_probs
 from sim_robot import Robot
+
+N_ORIENTATIONS = 8
+ACTION_FORWARD = "FORWARD"
+ACTION_TURN_LEFT = "TURN_LEFT"
+ACTION_TURN_RIGHT = "TURN_RIGHT"
+
+THETA_TO_STEP = {
+    0: (0, 1, WALL_RIGHT),
+    2: (1, 0, WALL_DOWN),
+    4: (0, -1, WALL_LEFT),
+    6: (-1, 0, WALL_UP),
+}
+
+
+def initialize_belief(rows, cols):
+    """Return a uniform belief over (row, col, orientation)."""
+    belief = np.ones((rows, cols, N_ORIENTATIONS), dtype=float)
+    belief /= belief.size
+    return belief
 
 
 def precompute_all_orientations(wall_map):
@@ -16,13 +37,13 @@ def precompute_all_orientations(wall_map):
     """
     print("Pre-computing for 8 orientations... (Wait for it)")
     rows, cols, _ = wall_map.shape
-    data = np.zeros((rows, cols, 8, len(SENSOR_ANGLES)))
+    data = np.zeros((rows, cols, N_ORIENTATIONS, len(SENSOR_ANGLES)))
 
     v_bot = Robot(0, 0)
     for r in range(rows):
         for c in range(cols):
             v_bot.move_to(r, c)
-            for ang_idx in range(8):
+            for ang_idx in range(N_ORIENTATIONS):
                 v_bot.angle_index = ang_idx
                 v_bot.active_sensors = [True] * len(SENSOR_ANGLES)
                 dists, _ = v_bot.measure(wall_map)
@@ -32,104 +53,144 @@ def precompute_all_orientations(wall_map):
     return data
 
 
-def update_probability(prob_matrix, measured_dists, expected_data, current_angle_idx):
-    """
-    Bayes correction step: weight each cell by how well the current measurements
-    match the pre-computed expectations for that cell and heading.
+def _normalize_or_uniform(prob):
+    total = float(np.sum(prob))
+    if total > 0.0:
+        return prob / total
+    out = np.ones_like(prob, dtype=float)
+    out /= out.size
+    return out
 
-    sigma=20mm accounts for map discretization error (cells are 180mm wide) on
-    top of the sensor's 1mm accuracy.
+
+def update_probability(prob_matrix, measured_dists, expected_data):
     """
-    rows, cols = prob_matrix.shape
+    Bayes correction step over every discrete (row, col, theta) state.
+    """
+    rows, cols, orientations = prob_matrix.shape
     new_prob = np.zeros_like(prob_matrix)
-    sigma = 20.0  # mm
+    sigma = SENSOR_LIKELIHOOD_SIGMA_MM
 
     for r in range(rows):
         for c in range(cols):
-            if prob_matrix[r, c] < 0.00001:
-                continue
-
-            expected_dists = expected_data[r, c, current_angle_idx]
-            likelihood = 1.0
-
-            for i in range(len(SENSOR_ANGLES)):
-                z = measured_dists[i]
-                if z is None:
+            for theta in range(orientations):
+                prior = prob_matrix[r, c, theta]
+                if prior < SENSOR_LIKELIHOOD_FLOOR:
                     continue
-                mu = max(expected_dists[i], MIN_RANGE_MM)
-                likelihood *= np.exp(-((z - mu) ** 2) / (2 * sigma ** 2))
 
-            new_prob[r, c] = prob_matrix[r, c] * likelihood
-
-    total = np.sum(new_prob)
-    if total > 0:
-        new_prob /= total
-    else:
-        new_prob.fill(1.0 / np.count_nonzero(prob_matrix))
-
-    return new_prob
-
-
-def predict_motion(prob_matrix, dr, dc, wall_map):
-    """
-    Motion model: shift the probability cloud by (dr, dc), then apply a
-    3×3 blur to represent positional uncertainty after each move.
-    """
-    rows, cols = prob_matrix.shape
-    shifted = np.zeros_like(prob_matrix)
-
-    for r in range(rows):
-        for c in range(cols):
-            if prob_matrix[r, c] <= 0.0001:
-                continue
-
-            blocked = (
-                (dr == -1 and (wall_map[r, c, WALL_UP] == 0 or r - 1 < 0)) or
-                (dr ==  1 and (wall_map[r, c, WALL_DOWN] == 0 or r + 1 >= rows)) or
-                (dc == -1 and (wall_map[r, c, WALL_LEFT] == 0 or c - 1 < 0)) or
-                (dc ==  1 and (wall_map[r, c, WALL_RIGHT] == 0 or c + 1 >= cols))
-            )
-
-            if blocked:
-                shifted[r, c] += prob_matrix[r, c]
-            else:
-                shifted[r + dr, c + dc] += prob_matrix[r, c]
-
-    # Blur kernel:
-    # 0.05  0.10  0.05
-    # 0.10  0.40  0.10
-    # 0.05  0.10  0.05
-    blurred = np.zeros_like(shifted)
-    for r in range(rows):
-        for c in range(cols):
-            val = shifted[r, c]
-            if val < 1e-9:
-                continue
-            for dr_k in (-1, 0, 1):
-                for dc_k in (-1, 0, 1):
-                    nr, nc = r + dr_k, c + dc_k
-                    if not (0 <= nr < rows and 0 <= nc < cols):
+                expected_dists = expected_data[r, c, theta]
+                likelihood = 1.0
+                for i in range(len(SENSOR_ANGLES)):
+                    z = measured_dists[i]
+                    if z is None:
                         continue
-                    if dr_k == 0 and dc_k == 0:
-                        weight = 0.40
-                    elif dr_k == 0 or dc_k == 0:
-                        weight = 0.10
-                    else:
-                        weight = 0.05
-                    blurred[nr, nc] += val * weight
+                    mu = max(expected_dists[i], MIN_RANGE_MM)
+                    likelihood *= np.exp(-((z - mu) ** 2) / (2 * sigma ** 2))
 
-    total = np.sum(blurred)
-    if total > 0:
-        blurred /= total
+                likelihood = max(float(likelihood), SENSOR_LIKELIHOOD_FLOOR)
+                if SENSOR_LIKELIHOOD_POWER != 1.0:
+                    likelihood = likelihood ** SENSOR_LIKELIHOOD_POWER
+                new_prob[r, c, theta] = prior * likelihood
 
-    return blurred
+    return _normalize_or_uniform(new_prob)
+
+
+def _advance_one_cell(r, c, theta, wall_map):
+    move = THETA_TO_STEP.get(theta % N_ORIENTATIONS)
+    if move is None:
+        return r, c
+
+    rows, cols = wall_map.shape[:2]
+    dr, dc, wall_idx = move
+    nr, nc = r + dr, c + dc
+    if not (0 <= nr < rows and 0 <= nc < cols):
+        return r, c
+    if wall_map[r, c, wall_idx] == 0:
+        return r, c
+    return nr, nc
+
+
+def predict_forward(prob_matrix, wall_map, noisy=None):
+    """Prediction for a commanded one-cell forward move."""
+    rows, cols, orientations = prob_matrix.shape
+    predicted = np.zeros_like(prob_matrix)
+    probs = forward_transition_probs(noisy)
+
+    for r in range(rows):
+        for c in range(cols):
+            for theta in range(orientations):
+                mass = prob_matrix[r, c, theta]
+                if mass <= SENSOR_LIKELIHOOD_FLOOR:
+                    continue
+                if theta not in THETA_TO_STEP:
+                    predicted[r, c, theta] += mass
+                    continue
+
+                # undershoot: stay
+                predicted[r, c, theta] += mass * probs[0]
+
+                # correct: one reachable cell, or the last reachable state
+                r1, c1 = _advance_one_cell(r, c, theta, wall_map)
+                predicted[r1, c1, theta] += mass * probs[1]
+
+                # overshoot: cross the first and then second edge if possible
+                r2, c2 = _advance_one_cell(r1, c1, theta, wall_map)
+                predicted[r2, c2, theta] += mass * probs[2]
+
+    return _normalize_or_uniform(predicted)
+
+
+def predict_turn(prob_matrix, direction, noisy=None):
+    """Prediction for a commanded +/- one-index turn."""
+    direction = 1 if direction > 0 else -1
+    rows, cols, orientations = prob_matrix.shape
+    predicted = np.zeros_like(prob_matrix)
+    probs = turn_transition_probs(noisy)
+
+    for r in range(rows):
+        for c in range(cols):
+            for theta in range(orientations):
+                mass = prob_matrix[r, c, theta]
+                if mass <= SENSOR_LIKELIHOOD_FLOOR:
+                    continue
+                predicted[r, c, theta] += mass * probs[0]
+                predicted[r, c, (theta + direction) % orientations] += mass * probs[1]
+                predicted[r, c, (theta + 2 * direction) % orientations] += mass * probs[2]
+
+    return _normalize_or_uniform(predicted)
+
+
+def predict_action(prob_matrix, action, wall_map, noisy=None):
+    """Dispatch prediction for FORWARD, TURN_LEFT, or TURN_RIGHT."""
+    if action == ACTION_FORWARD:
+        return predict_forward(prob_matrix, wall_map, noisy)
+    if action == ACTION_TURN_LEFT:
+        return predict_turn(prob_matrix, -1, noisy)
+    if action == ACTION_TURN_RIGHT:
+        return predict_turn(prob_matrix, 1, noisy)
+    raise ValueError(f"unknown action: {action}")
+
+
+def predict_motion(prob_matrix, dr, dc, wall_map, noisy=None):
+    """Compatibility wrapper for old cardinal move callers."""
+    theta_lookup = {(-1, 0): 6, (1, 0): 2, (0, -1): 4, (0, 1): 0}
+    theta = theta_lookup.get((dr, dc))
+    if theta is None:
+        return prob_matrix
+    directed = np.zeros_like(prob_matrix)
+    directed[:, :, theta] = np.sum(prob_matrix, axis=2)
+    return predict_forward(directed, wall_map, noisy)
 
 
 def get_best_estimate(prob_matrix):
-    """Return (r, c, peak_probability) of the highest-probability cell."""
+    """Return (r, c, theta, peak_probability) for the most likely state."""
     idx = np.argmax(prob_matrix)
-    r, c = divmod(idx, MAP_COLS)
-    return r, c, prob_matrix[r, c]
+    r, c, theta = np.unravel_index(idx, prob_matrix.shape)
+    return int(r), int(c), int(theta), float(prob_matrix[r, c, theta])
+
+
+def collapse_position_belief(prob_matrix):
+    """Return position probability by summing out orientation."""
+    return np.sum(prob_matrix, axis=2)
 
 
 def do_localization_step(robot, wall_map, spin_count, move_count):

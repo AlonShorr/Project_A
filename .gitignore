@@ -42,3 +42,6 @@ tools/esp-idf/
 # Generic caches
 .cache/
 AGENTS.md
+
+#Documents
+**/docs/

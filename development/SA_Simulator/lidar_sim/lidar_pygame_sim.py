@@ -8,14 +8,20 @@ from config import (
     SENSOR_ANGLES, DIR_TO_ANGLE,
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
     LOCALIZATION_THRESHOLD, IS_LOST_THRESHOLD, GOAL, AUTO_STEP_DELAY,
+    ENABLE_SENSOR_NOISE, ENABLE_MOTION_NOISE, RANDOM_SEED,
+    FORWARD_TOLERANCE_MM, FORWARD_SIGMA_MM,
+    TURN_TOLERANCE_DEG, TURN_SIGMA_DEG,
     BLACK, WHITE, BLUE, GREEN, RED, GRAY, CYAN, YELLOW, ORANGE, SIDEBAR_BG,
 )
 from sim_robot import Robot
 from localization import (
+    initialize_belief,
     precompute_all_orientations,
     update_probability,
     predict_motion,
+    predict_action,
     get_best_estimate,
+    collapse_position_belief,
 )
 from active_localization import select_best_action, apply_action_to_robot
 from motion_planning import plan_path
@@ -33,8 +39,8 @@ def main():
     wall_map = generate_wall_map()
     expected_data = precompute_all_orientations(wall_map)
 
-    prob_matrix = np.ones((MAP_ROWS, MAP_COLS))
-    prob_matrix /= MAP_ROWS * MAP_COLS
+    rng = np.random.default_rng(RANDOM_SEED)
+    prob_matrix = initialize_belief(MAP_ROWS, MAP_COLS)
 
     robot = Robot(3, 3)
 
@@ -55,6 +61,8 @@ def main():
     while running:
         moved = False
         dr, dc = 0, 0
+        commanded_action = None
+        commanded_noisy = False
 
         # --- Event handling ---
         for event in pygame.event.get():
@@ -87,7 +95,7 @@ def main():
                                 print(f"Goal set to {goal}")
                             else:  # Left-click: teleport robot
                                 robot.move_to(r, c)
-                                prob_matrix.fill(1.0 / (MAP_ROWS * MAP_COLS))
+                                prob_matrix = initialize_belief(MAP_ROWS, MAP_COLS)
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_b:
@@ -98,7 +106,7 @@ def main():
                         screen.blit(txt, (MAP_WIDTH // 2 - 150, MAP_HEIGHT // 2))
                         pygame.display.flip()
                         expected_data = precompute_all_orientations(wall_map)
-                        prob_matrix.fill(1.0 / (MAP_ROWS * MAP_COLS))
+                        prob_matrix = initialize_belief(MAP_ROWS, MAP_COLS)
 
                 if event.key == pygame.K_p and not building_mode:
                     if analysis_mode:
@@ -136,8 +144,12 @@ def main():
                     elif event.key == pygame.K_s: dr, dc = 1, 0
                     elif event.key == pygame.K_a: dr, dc = 0, -1
                     elif event.key == pygame.K_d: dr, dc = 0, 1
-                    elif event.key == pygame.K_q: robot.rotate(-1)
-                    elif event.key == pygame.K_e: robot.rotate(1)
+                    elif event.key == pygame.K_q:
+                        robot.rotate(-1)
+                        commanded_action = "TURN_LEFT"
+                    elif event.key == pygame.K_e:
+                        robot.rotate(1)
+                        commanded_action = "TURN_RIGHT"
                     elif event.key == pygame.K_1: robot.toggle_sensor(0)
                     elif event.key == pygame.K_2: robot.toggle_sensor(1)
                     elif event.key == pygame.K_3: robot.toggle_sensor(2)
@@ -151,6 +163,8 @@ def main():
         # --- Simulation logic ---
         if not building_mode:
             eff_dr, eff_dc, eff_moved = 0, 0, False
+            eff_action = commanded_action
+            eff_action_noisy = commanded_noisy
             now = pygame.time.get_ticks()
             auto_step_ready = (now - last_auto_step_ms) >= auto_step_delay
 
@@ -165,15 +179,18 @@ def main():
                 if active_loc_action is None:
                     auto_state = AUTO_PLANNING  # belief already localized
                 else:
-                    eff_dr, eff_dc = apply_action_to_robot(robot, active_loc_action, wall_map)
+                    eff_dr, eff_dc, eff_action = apply_action_to_robot(
+                        robot, active_loc_action, wall_map, rng, ENABLE_MOTION_NOISE
+                    )
+                    eff_action_noisy = ENABLE_MOTION_NOISE
                     eff_moved = (eff_dr != 0 or eff_dc != 0)
                     if robot.angle_index == active_loc_action.heading:
                         active_loc_action = None  # action complete, re-select next step
                     last_auto_step_ms = now
 
             elif auto_state == AUTO_PLANNING:
-                est_r, est_c, _ = get_best_estimate(prob_matrix)
-                path = plan_path((est_r, est_c, robot.angle_index), goal, wall_map)
+                est_r, est_c, est_theta, _ = get_best_estimate(prob_matrix)
+                path = plan_path((est_r, est_c, est_theta), goal, wall_map)
                 if path and len(path) > 1:
                     planned_path = list(path[1:])
                     auto_state = AUTO_MOVING
@@ -183,6 +200,8 @@ def main():
                     auto_state = AUTO_IDLE
 
             elif auto_state == AUTO_MOVING and auto_step_ready:
+                while planned_path and (robot.r, robot.c) == planned_path[0]:
+                    planned_path.pop(0)
                 if not planned_path:
                     if (robot.r, robot.c) == goal:
                         auto_state = AUTO_DONE
@@ -194,15 +213,29 @@ def main():
                     step_dr = target_r - robot.r
                     step_dc = target_c - robot.c
                     required_angle = DIR_TO_ANGLE.get((step_dr, step_dc))
-                    if required_angle is not None and robot.angle_index != required_angle:
+                    if required_angle is None:
+                        auto_state = AUTO_PLANNING
+                    elif robot.angle_index != required_angle:
                         delta = (required_angle - robot.angle_index) % 8
-                        robot.rotate(1 if delta <= 4 else -1)
+                        turn_action = "TURN_RIGHT" if delta <= 4 else "TURN_LEFT"
+                        if ENABLE_MOTION_NOISE:
+                            robot.apply_action(turn_action, wall_map, rng, noisy=True)
+                        else:
+                            robot.rotate(1 if delta <= 4 else -1)
+                        eff_action = turn_action
+                        eff_action_noisy = ENABLE_MOTION_NOISE
                         last_auto_step_ms = now
                     else:
-                        if robot.move_rel(step_dr, step_dc, wall_map):
-                            eff_dr, eff_dc = step_dr, step_dc
-                            eff_moved = True
-                            last_auto_step_ms = now
+                        old_r, old_c = robot.r, robot.c
+                        if ENABLE_MOTION_NOISE:
+                            robot.apply_action("FORWARD", wall_map, rng, noisy=True)
+                        else:
+                            robot.move_rel(step_dr, step_dc, wall_map)
+                        eff_dr, eff_dc = robot.r - old_r, robot.c - old_c
+                        eff_moved = (eff_dr != 0 or eff_dc != 0)
+                        eff_action = "FORWARD"
+                        eff_action_noisy = ENABLE_MOTION_NOISE
+                        last_auto_step_ms = now
                         if robot.r == target_r and robot.c == target_c:
                             planned_path.pop(0)
 
@@ -210,37 +243,42 @@ def main():
                 eff_dr, eff_dc = dr, dc
                 eff_moved = moved
 
-            if eff_moved:
-                prob_matrix = predict_motion(prob_matrix, eff_dr, eff_dc, wall_map)
+            if eff_action in ("FORWARD", "TURN_LEFT", "TURN_RIGHT"):
+                prob_matrix = predict_action(
+                    prob_matrix, eff_action, wall_map, noisy=eff_action_noisy
+                )
+            elif eff_moved:
+                prob_matrix = predict_motion(prob_matrix, eff_dr, eff_dc, wall_map, noisy=False)
 
-            dists, hit_points = robot.measure(wall_map)
-            prob_matrix = update_probability(prob_matrix, dists, expected_data, robot.angle_index)
+            dists, hit_points = robot.measure(wall_map, add_noise=ENABLE_SENSOR_NOISE)
+            prob_matrix = update_probability(prob_matrix, dists, expected_data)
 
             if auto_state == AUTO_LOCALIZING:
-                _, _, peak = get_best_estimate(prob_matrix)
+                _, _, _, peak = get_best_estimate(prob_matrix)
                 if peak >= LOCALIZATION_THRESHOLD:
                     print(f"Localized! peak={peak:.3f}. Planning path to {goal}...")
                     auto_state = AUTO_PLANNING
                     active_loc_action = None
             elif auto_state == AUTO_MOVING:
-                _, _, peak = get_best_estimate(prob_matrix)
+                _, _, _, peak = get_best_estimate(prob_matrix)
                 if peak < IS_LOST_THRESHOLD:
                     print(f"Lost (peak={peak:.3f}). Re-localizing...")
                     auto_state = AUTO_LOCALIZING
                     active_loc_action = None
                     planned_path = []
         else:
-            dists, hit_points = robot.measure(wall_map)
+            dists, hit_points = robot.measure(wall_map, add_noise=ENABLE_SENSOR_NOISE)
 
         # --- Drawing ---
         screen.fill(BLACK)
+        position_prob = collapse_position_belief(prob_matrix)
 
         for r in range(MAP_ROWS):
             for c in range(MAP_COLS):
                 rect = (c * GRID_SIZE, r * GRID_SIZE, GRID_SIZE, GRID_SIZE)
 
                 if not building_mode and not analysis_mode:
-                    b = min(int(prob_matrix[r, c] * 5000), 255)
+                    b = min(int(position_prob[r, c] * 5000), 255)
                     if b > 10:
                         s = pygame.Surface((GRID_SIZE, GRID_SIZE))
                         s.set_alpha(150)
@@ -341,6 +379,13 @@ def main():
             y_off += 20
         y_off += 10
 
+        screen.blit(font.render("NOISE", True, GREEN), (x_start, y_off)); y_off += 25
+        screen.blit(small_font.render(f"Sensor noise: {ENABLE_SENSOR_NOISE}", True, WHITE), (x_start, y_off)); y_off += 20
+        screen.blit(small_font.render(f"Motion noise: {ENABLE_MOTION_NOISE}", True, WHITE), (x_start, y_off)); y_off += 20
+        screen.blit(small_font.render(f"F tol/sigma: {FORWARD_TOLERANCE_MM:.1f}/{FORWARD_SIGMA_MM:.1f} mm", True, WHITE), (x_start, y_off)); y_off += 20
+        screen.blit(small_font.render(f"T tol/sigma: {TURN_TOLERANCE_DEG:.1f}/{TURN_SIGMA_DEG:.1f} deg", True, WHITE), (x_start, y_off)); y_off += 20
+        y_off += 10
+
         screen.blit(font.render("DIAGNOSTICS", True, GREEN), (x_start, y_off)); y_off += 25
         screen.blit(font.render(f"Heading: {robot.angle_deg}°", True, WHITE), (x_start, y_off)); y_off += 25
         screen.blit(font.render("Top Probable Locs:", True, GREEN), (x_start, y_off)); y_off += 25
@@ -348,13 +393,13 @@ def main():
         if not building_mode and not analysis_mode:
             count = 0
             for idx in np.argsort(prob_matrix.ravel())[::-1]:
-                r_idx, c_idx = divmod(idx, MAP_COLS)
-                prob = prob_matrix[r_idx, c_idx]
+                r_idx, c_idx, theta_idx = np.unravel_index(idx, prob_matrix.shape)
+                prob = prob_matrix[r_idx, c_idx, theta_idx]
                 if prob < 0.005 or count >= 8:
                     break
-                text_str = f"({r_idx}, {c_idx}): {prob:.3f}"
+                text_str = f"({r_idx}, {c_idx}, {theta_idx}): {prob:.3f}"
                 color = WHITE
-                if r_idx == robot.r and c_idx == robot.c:
+                if r_idx == robot.r and c_idx == robot.c and theta_idx == robot.angle_index:
                     color = GREEN
                     text_str += " <--"
                 screen.blit(small_font.render(text_str, True, color), (x_start, y_off))

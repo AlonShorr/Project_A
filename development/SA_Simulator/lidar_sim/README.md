@@ -35,7 +35,8 @@ python3 lidar_pygame_sim.py
 ```
 lidar_sim/
 │
-├── config.py            # All constants (map size, sensor specs, colors, thresholds)
+├── config.py            # All constants (map size, sensor specs, noise model, thresholds)
+├── discrete_noise.py    # Gaussian-derived discrete transition probabilities
 ├── sim_robot.py         # Robot class (sensors, movement, ray-casting)
 ├── map_builder.py       # Map definition, wall editing, debug data dump
 ├── localization.py      # Bayes filter localization algorithm
@@ -58,6 +59,7 @@ Single source of truth for every constant in the project. Nothing here is comput
 Key groups:
 - **Display** — window size, grid size, pixel dimensions
 - **Physics/Sensor** — cell size in mm, sensor range, noise level, sensor angles
+- **Discrete noise model** — forward/turn tolerances, sigmas, biases, random seed
 - **Wall indices** — `WALL_UP/DOWN/LEFT/RIGHT` (used throughout the codebase)
 - **Algorithm thresholds** — localization confidence levels, step delays
 - **Colors** — all pygame color tuples
@@ -91,15 +93,21 @@ Implements the probabilistic localization pipeline (histogram/Bayes filter).
 
 | Function | Description |
 |---|---|
+| `initialize_belief(rows, cols)` | Creates a uniform `(row, col, theta)` belief with shape `(rows, cols, 8)` |
 | `precompute_all_orientations(wall_map)` | Ray-casts a virtual robot at every (cell, angle) and caches the results |
-| `update_probability(prob, measured, expected, angle)` | **Correction step** — weights each cell by Gaussian likelihood of the measurements |
-| `predict_motion(prob, dr, dc, wall_map)` | **Prediction step** — shifts the probability cloud then blurs it with a 3×3 kernel |
-| `get_best_estimate(prob)` | Returns `(row, col, peak_probability)` of the most likely cell |
+| `update_probability(prob, measured, expected)` | **Correction step** — weights every `(row, col, theta)` state by Gaussian likelihood |
+| `predict_forward(prob, wall_map)` | **Prediction step** — distributes mass over undershoot/correct/overshoot forward outcomes |
+| `predict_turn(prob, direction)` | **Prediction step** — distributes mass over under/correct/over turn outcomes |
+| `predict_action(prob, action, wall_map)` | Dispatches `"FORWARD"`, `"TURN_LEFT"`, and `"TURN_RIGHT"` predictions |
+| `collapse_position_belief(prob)` | Sums out theta for drawing the 2D heatmap |
+| `get_best_estimate(prob)` | Returns `(row, col, theta, peak_probability)` of the most likely state |
 | `do_localization_step(robot, wall_map, spin, moves)` | Drives the spin-then-explore recovery sequence one frame at a time |
 
-**Filter sigma:** The Gaussian likelihood uses `σ = 20 mm`. The real sensor is accurate to ±1 mm, but a cell is 180 mm wide. The larger sigma prevents the filter from collapsing when the robot is slightly off-center in a cell.
+The localization belief is fully discrete over `(row, col, theta)`, where `theta` has 8 possible headings. The sensor correction evaluates likelihood over all orientations instead of assuming the robot heading is known exactly.
 
-**Blur kernel:** The motion blur distributes 40% of each cell's mass to itself, 10% to each cardinal neighbor, and 5% to each diagonal neighbor, then re-normalizes. This prevents the filter from becoming overconfident after movement.
+**Filter sigma:** The Gaussian likelihood uses `SENSOR_LIKELIHOOD_SIGMA_MM` from `config.py`. The real sensor noise can be toggled separately with `ENABLE_SENSOR_NOISE`; the likelihood sigma is the main localization uncertainty model.
+
+**Motion model:** Motion remains discrete. Forward and turn commands use Gaussian-derived three-bin probabilities: undershoot, correct, and overshoot. `FORWARD_TOLERANCE_MM` and `TURN_TOLERANCE_DEG` in `config.py` define the success windows and are the primary tuning knobs.
 
 ### `active_localization.py`
 Replaces the old spin-then-random-walk recovery with an information-theoretic policy. When the robot is lost or its belief is multimodal, passive re-measurement cannot break the tie — every competing hypothesis predicts the same reading, so the belief stays stuck. Active localization deliberately picks the action whose *expected* observation differs most across the competing hypotheses, collapsing the belief as fast as possible.
@@ -111,7 +119,7 @@ H(Bel) = -sum_x Bel(x) * ln Bel(x)
 ```
 
 A fully localized belief has H ≈ 0; k equiprobable cells give H = ln k. For each candidate action `a`, the policy:
-1. Runs the motion model to get the predicted belief `Bel^-` (moves use `predict_motion`; rotations leave the belief unchanged).
+1. Runs the motion model to get the predicted belief `Bel^-` (moves and turns use the discrete action prediction helpers).
 2. For each of the top-K most probable hypotheses `x'`, looks up the noiseless sensor reading the robot would get if it were truly at `x'` (from `expected_data`), runs the Bayes correction, and measures the resulting entropy.
 3. Averages those entropies weighted by `Bel^-(x')` to get `E[H | a]`.
 4. Chooses `a* = argmax_a [ H(Bel) - E[H|a] - cost(a) ]`.
@@ -168,7 +176,7 @@ Entry point. Contains `main()` and nothing else — all logic lives in the modul
 Responsibilities:
 - Initialize pygame, fonts, and display
 - Run the event loop (keyboard, mouse)
-- Dispatch to `select_best_action`, `apply_action_to_robot`, `plan_path`, `predict_motion`, `update_probability` at the right times
+- Dispatch to `select_best_action`, `apply_action_to_robot`, `plan_path`, `predict_action`, `update_probability` at the right times
 - Manage the auto-mode state machine (`IDLE → LOCALIZING → PLANNING → MOVING → DONE`)
 - Draw the map, probability heatmap, robot, sensor rays, planned path, and sidebar
 
@@ -180,16 +188,16 @@ Responsibilities:
 ┌─────────────────────────────────────────────────────────────┐
 │                     lidar_pygame_sim.py                     │
 │                                                             │
-│  Events ──► Robot.move_rel / rotate / toggle_sensor         │
+│  Events ──► Robot.move_rel / rotate / apply_action          │
 │                                                             │
 │  Each frame:                                                │
 │    Robot.measure(wall_map)                                  │
 │         │                                                   │
 │         ▼                                                   │
-│    update_probability(prob, dists, expected_data, angle)    │
+│    update_probability(prob, dists, expected_data)           │
 │         │                                                   │
 │         ▼                                                   │
-│    predict_motion(prob, dr, dc, wall_map)  (if moved)       │
+│    predict_action(prob, action, wall_map)  (if commanded)   │
 │         │                                                   │
 │         ▼                                                   │
 │    get_best_estimate(prob)                                  │
@@ -211,7 +219,7 @@ Responsibilities:
 Supporting data structures:
   wall_map      (Rows, Cols, 4)  numpy int array — the map
   expected_data (Rows, Cols, 8, 5) numpy float array — precomputed sensor readings
-  prob_matrix   (Rows, Cols)     numpy float array — localization belief
+  prob_matrix   (Rows, Cols, 8)  numpy float array — localization belief
 ```
 
 ---
