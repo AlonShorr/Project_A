@@ -4,40 +4,15 @@ from config import (
     MAP_ROWS, MAP_COLS, GRID_SIZE, MAP_WIDTH, MAP_HEIGHT,
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
 )
+from map_generator import get_map
 
 
 def generate_wall_map():
     """
-    Build the Alon House map using thin walls.
+    Return the default generated map using thin walls.
     Returns an ndarray of shape (Rows, Cols, 4). Values: 0=Wall, 1=Open.
     """
-    maze = np.ones((MAP_ROWS, MAP_COLS, 4), dtype=int)
-
-    def set_v_wall(r, c):
-        """Place a wall on the right edge of cell (r, c)."""
-        maze[r, c, WALL_RIGHT] = 0
-        if c + 1 < MAP_COLS:
-            maze[r, c + 1, WALL_LEFT] = 0
-
-    def set_h_wall(r, c):
-        """Place a wall on the bottom edge of cell (r, c)."""
-        maze[r, c, WALL_DOWN] = 0
-        if r + 1 < MAP_ROWS:
-            maze[r + 1, c, WALL_UP] = 0
-
-    # Border walls
-    maze[0, :, WALL_UP] = 0
-    maze[-1, :, WALL_DOWN] = 0
-    maze[:, 0, WALL_LEFT] = 0
-    maze[:, -1, WALL_RIGHT] = 0
-
-    # Alon House internal walls
-    for i in range(0, 9):
-        set_h_wall(2, i)
-    for i in range(0, 3):
-        set_v_wall(i, 8)
-
-    return maze
+    return np.array(get_map(0)["wall_map"], copy=True)
 
 
 def toggle_wall_click(wall_map, mx, my):
