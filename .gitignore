@@ -17,8 +17,7 @@ __pycache__/
 **/venv/
 development/SA_Simulator/robot_sim/
 **/robot_sim/
-development/SA_Simulator/lidar_sim/
-**/lidar_sim/
+development/SA_Simulator/lidar_sim/**/lidar_sim/
 
 # Build outputs (general + ESP-IDF)
 **/build/
