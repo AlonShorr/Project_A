@@ -63,6 +63,10 @@ WALL_RIGHT = 3
 LOCALIZATION_THRESHOLD = 0.25   # Min peak-prob to trust localization
 LOCALIZATION_MOVES = 8          # Max random exploratory moves while lost
 IS_LOST_THRESHOLD = 0.15        # Re-localize if peak-prob drops below this
+# Belief is "localized" only if the strongest competing (far-away) mode is at
+# or below this fraction of the peak. Guards against a bimodal belief (two
+# equiprobable cells) being trusted as localized, which sends a bad plan to A*.
+LOCALIZATION_AMBIGUITY_RATIO = 0.5
 AUTO_STEP_DELAY = 200           # ms between auto steps; adjust with [ / ] keys
 
 GOAL = (1, 8)  # Default (row, col) goal

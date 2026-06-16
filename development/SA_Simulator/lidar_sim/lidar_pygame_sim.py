@@ -8,6 +8,7 @@ from config import (
     SENSOR_ANGLES, DIR_TO_ANGLE,
     WALL_UP, WALL_DOWN, WALL_LEFT, WALL_RIGHT,
     LOCALIZATION_THRESHOLD, IS_LOST_THRESHOLD, AUTO_STEP_DELAY,
+    LOCALIZATION_AMBIGUITY_RATIO,
     ENABLE_SENSOR_NOISE, ENABLE_MOTION_NOISE, RANDOM_SEED,
     FORWARD_TRANSITION_BIN_HALF_WIDTH_MM, FORWARD_CONTROL_TOLERANCE_MM, FORWARD_SIGMA_MM,
     TURN_TRANSITION_BIN_HALF_WIDTH_DEG, TURN_CONTROL_TOLERANCE_DEG, TURN_SIGMA_DEG,
@@ -22,6 +23,7 @@ from localization import (
     predict_action,
     get_best_estimate,
     collapse_position_belief,
+    dominant_position_modes,
 )
 from active_localization import select_best_action, apply_action_to_robot
 from motion_planning import plan_path
@@ -299,7 +301,8 @@ def main():
                     step_dc = target_c - robot.c
                     required_angle = DIR_TO_ANGLE.get((step_dr, step_dc))
                     if required_angle is None:
-                        auto_state = AUTO_PLANNING
+                        print("Next path step is non-adjacent — belief may be wrong. Re-localizing...")
+                        reset_auto(AUTO_LOCALIZING)
                     elif robot.angle_index != required_angle:
                         delta = (required_angle - robot.angle_index) % 8
                         turn_action = "TURN_RIGHT" if delta <= 4 else "TURN_LEFT"
@@ -323,6 +326,9 @@ def main():
                         last_auto_step_ms = now
                         if robot.r == target_r and robot.c == target_c:
                             planned_path.pop(0)
+                        elif not eff_moved:
+                            print("Forward move blocked by wall — plan is invalid. Re-localizing...")
+                            reset_auto(AUTO_LOCALIZING)
 
             else:  # AUTO_IDLE or AUTO_DONE — manual control
                 eff_dr, eff_dc = dr, dc
@@ -339,9 +345,11 @@ def main():
             prob_matrix = update_probability(prob_matrix, dists, expected_data)
 
             if auto_state == AUTO_LOCALIZING:
-                _, _, _, peak = get_best_estimate(prob_matrix)
-                if peak >= LOCALIZATION_THRESHOLD:
-                    print(f"Localized! peak={peak:.3f}. Planning path to {goal}...")
+                peak, runner_up = dominant_position_modes(prob_matrix)
+                ambiguous = runner_up > peak * LOCALIZATION_AMBIGUITY_RATIO
+                if peak >= LOCALIZATION_THRESHOLD and not ambiguous:
+                    print(f"Localized! peak={peak:.3f} (runner-up {runner_up:.3f}). "
+                          f"Planning path to {goal}...")
                     auto_state = AUTO_PLANNING
                     active_loc_action = None
             elif auto_state == AUTO_MOVING:

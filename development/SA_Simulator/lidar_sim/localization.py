@@ -193,6 +193,33 @@ def collapse_position_belief(prob_matrix):
     return np.sum(prob_matrix, axis=2)
 
 
+def dominant_position_modes(prob_matrix, min_separation=2):
+    """Return ``(peak_prob, runner_up_prob)`` over distinct position modes.
+
+    Collapses orientation out of the belief, then reports the strongest cell
+    probability (``peak_prob``) alongside the strongest *competing* cell
+    (``runner_up_prob``): the highest probability among cells at least
+    ``min_separation`` cells away (Chebyshev distance) from the peak.
+
+    The separation matters because a single, well-localized peak still leaks
+    probability onto its immediate neighbours through the motion-blur model.
+    Those neighbours are not a competing hypothesis. A genuine second mode (the
+    multimodal / ambiguous case that stalls planning) sits *far* from the peak,
+    so requiring a gap of ``min_separation`` distinguishes "smeared but
+    unimodal" from "two real hypotheses".
+    """
+    pos = collapse_position_belief(prob_matrix)
+    pr, pc = np.unravel_index(int(np.argmax(pos)), pos.shape)
+    peak = float(pos[pr, pc])
+
+    rows, cols = pos.shape
+    rr = np.arange(rows)[:, None]
+    cc = np.arange(cols)[None, :]
+    far = (np.abs(rr - pr) >= min_separation) | (np.abs(cc - pc) >= min_separation)
+    runner_up = float(pos[far].max()) if far.any() else 0.0
+    return peak, runner_up
+
+
 def do_localization_step(robot, wall_map, spin_count, move_count):
     """
     Advance the localization routine by one action frame:
