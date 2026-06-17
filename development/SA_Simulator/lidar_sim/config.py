@@ -71,8 +71,8 @@ AUTO_STEP_DELAY = 200           # ms between auto steps; adjust with [ / ] keys
 
 GOAL = (1, 8)  # Default (row, col) goal
 
-# Maps (dr, dc) movement direction to angle_index (0=E, 2=S, 4=W, 6=N)
-DIR_TO_ANGLE = {(-1, 0): 6, (1, 0): 2, (0, -1): 4, (0, 1): 0}
+# Maps (dr, dc) movement direction to angle_index (6=N, 4=W,  2=S, 0=E)
+DIR_TO_ANGLE = {(-1, 0): 6, (0, -1): 4, (1, 0): 2, (0, 1): 0}
 
 # --- Colors ---
 BLACK = (0, 0, 0)

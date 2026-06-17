@@ -182,41 +182,45 @@ def predict_motion(prob_matrix, dr, dc, wall_map, noisy=None):
 
 
 def get_best_estimate(prob_matrix):
-    """Return (r, c, theta, peak_probability) for the most likely state."""
+    """
+    Return (r, c, theta, peak_probability) for the most likely state
+    where state is (position, orientation).
+    """
     idx = np.argmax(prob_matrix)
     r, c, theta = np.unravel_index(idx, prob_matrix.shape)
     return int(r), int(c), int(theta), float(prob_matrix[r, c, theta])
 
 
 def collapse_position_belief(prob_matrix):
-    """Return position probability by summing out orientation."""
+    """
+    Return position (ONLY) probability matrix by summing out orientations
+    for each cell in the original probability matrix.
+    """
     return np.sum(prob_matrix, axis=2)
 
 
 def dominant_position_modes(prob_matrix, min_separation=2):
-    """Return ``(peak_prob, runner_up_prob)`` over distinct position modes.
-
-    Collapses orientation out of the belief, then reports the strongest cell
-    probability (``peak_prob``) alongside the strongest *competing* cell
-    (``runner_up_prob``): the highest probability among cells at least
-    ``min_separation`` cells away (Chebyshev distance) from the peak.
-
-    The separation matters because a single, well-localized peak still leaks
-    probability onto its immediate neighbours through the motion-blur model.
-    Those neighbours are not a competing hypothesis. A genuine second mode (the
-    multimodal / ambiguous case that stalls planning) sits *far* from the peak,
-    so requiring a gap of ``min_separation`` distinguishes "smeared but
-    unimodal" from "two real hypotheses".
     """
-    pos = collapse_position_belief(prob_matrix)
-    pr, pc = np.unravel_index(int(np.argmax(pos)), pos.shape)
-    peak = float(pos[pr, pc])
+    In case 2 cells have the same occupency probabilty
+    and they're not adjacent, this function will return both 
+    of the positions as peak and runner-up - rival cell of the
+    peak probability cell. 
+    """
+    # get position probability matrix
+    pos_prob_matrix = collapse_position_belief(prob_matrix) 
 
-    rows, cols = pos.shape
+    # get first high-occ-prob cell
+    pr, pc = np.unravel_index(int(np.argmax(pos_prob_matrix)), pos_prob_matrix.shape)
+    peak = float(pos_prob_matrix[pr, pc]) 
+
+    # make a mask to rule out adjacent cells from the peak cell
+    rows, cols = pos_prob_matrix.shape
     rr = np.arange(rows)[:, None]
     cc = np.arange(cols)[None, :]
     far = (np.abs(rr - pr) >= min_separation) | (np.abs(cc - pc) >= min_separation)
-    runner_up = float(pos[far].max()) if far.any() else 0.0
+
+    # get second high-occ-prob cell which isn't adjacent to the first one (if exists)
+    runner_up = float(pos_prob_matrix[far].max()) if far.any() else 0.0
     return peak, runner_up
 
 

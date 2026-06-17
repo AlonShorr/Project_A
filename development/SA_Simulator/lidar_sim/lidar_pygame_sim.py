@@ -81,9 +81,14 @@ def main():
         print(f"Selected map F{index + 1}: {current_map['name']} ({current_map['difficulty']})")
 
     def reset_auto(state=AUTO_IDLE):
+        """
+        Functions that resets the state and other variables regarding
+        localization and planning. 
+        """
         nonlocal auto_state, active_loc_action, planned_path, last_auto_step_ms
-        auto_state = state
-        active_loc_action = None
+        
+        auto_state = state          # set state
+        active_loc_action = None    # 
         planned_path = []
         last_auto_step_ms = 0
 
@@ -255,10 +260,10 @@ def main():
             now = pygame.time.get_ticks()
             auto_step_ready = (now - last_auto_step_ms) >= auto_step_delay
 
-            if auto_state == AUTO_LOCALIZING and auto_step_ready:
-                if active_loc_action is None:
-                    result = select_best_action(
-                        prob_matrix, expected_data, wall_map, robot.angle_index
+            if auto_state == AUTO_LOCALIZING and auto_step_ready:                    # robot in localization mode and ready for next step 
+                if active_loc_action is None:                                           # if robot doesn't know where it is
+                    result = select_best_action(                                            # select the action which will give it the most info
+                        prob_matrix, expected_data, wall_map, robot.angle_index             # about where it is.
                     )
                     active_loc_action = result["action"]
                     if active_loc_action is not None:
@@ -275,7 +280,7 @@ def main():
                         active_loc_action = None  # action complete, re-select next step
                     last_auto_step_ms = now
 
-            elif auto_state == AUTO_PLANNING:
+            elif auto_state == AUTO_PLANNING:                       
                 est_r, est_c, est_theta, _ = get_best_estimate(prob_matrix)
                 path = plan_path((est_r, est_c, est_theta), goal, wall_map)
                 if path and len(path) > 1:
@@ -286,49 +291,54 @@ def main():
                     print("A* returned no path. Stopping auto mode.")
                     reset_auto()
 
-            elif auto_state == AUTO_MOVING and auto_step_ready:
-                while planned_path and (robot.r, robot.c) == planned_path[0]:
+            elif auto_state == AUTO_MOVING and auto_step_ready:                      # otherwise, if mode is MOVING and ready to do next step                                                
+                while planned_path and (robot.r, robot.c) == planned_path[0]:           # pop current move if robot is on it to get next move
                     planned_path.pop(0)
-                if not planned_path:
-                    if (robot.r, robot.c) == goal:
+
+                if not planned_path:                                                    # if no more moves left in plan
+                    if (robot.r, robot.c) == goal:                                          # check if reach goal 
                         reset_auto(AUTO_DONE)
                         print("--- GOAL REACHED! ---")
-                    else:
+                    else:                                                                   # if didn't reach return to planning
                         auto_state = AUTO_PLANNING
-                else:
-                    target_r, target_c = planned_path[0]
+                
+                else:                                                                   # there are still some moves left to do in plane
+                    target_r, target_c = planned_path[0]                                    # get the move and check if valid
                     step_dr = target_r - robot.r
                     step_dc = target_c - robot.c
                     required_angle = DIR_TO_ANGLE.get((step_dr, step_dc))
-                    if required_angle is None:
+                    
+                    if required_angle is None:                                              # next step isn't adjacent 
                         print("Next path step is non-adjacent — belief may be wrong. Re-localizing...")
-                        reset_auto(AUTO_LOCALIZING)
-                    elif robot.angle_index != required_angle:
-                        delta = (required_angle - robot.angle_index) % 8
+                        reset_auto(AUTO_LOCALIZING)                                             # return to localization and reset belief
+                    
+                    elif robot.angle_index != required_angle:                               # next move is adjacent and in different angle from current robot orientation
+                        delta = (required_angle - robot.angle_index) % 8                        # pick shortest turn 
                         turn_action = "TURN_RIGHT" if delta <= 4 else "TURN_LEFT"
-                        if ENABLE_MOTION_NOISE:
-                            robot.apply_action(turn_action, wall_map, rng, noisy=True)
-                        else:
-                            robot.rotate(1 if delta <= 4 else -1)
-                        eff_action = turn_action
-                        eff_action_noisy = ENABLE_MOTION_NOISE
+                        if ENABLE_MOTION_NOISE:                                                 # if we enabled motion noise apply it on action
+                            robot.apply_action(turn_action, wall_map, rng, noisy=True)          
+                        else:                                                                   # otherwise just rotate 
+                            robot.rotate(1 if delta <= 4 else -1)                               
+                        eff_action = turn_action                                                # update the effective action we are doing,
+                        eff_action_noisy = ENABLE_MOTION_NOISE                                  # noise and time
                         last_auto_step_ms = now
-                    else:
-                        old_r, old_c = robot.r, robot.c
-                        if ENABLE_MOTION_NOISE:
-                            robot.apply_action("FORWARD", wall_map, rng, noisy=True)
+                    
+                    else:                                                                   # if next move is in our current direction - it's forward
+                        old_r, old_c = robot.r, robot.c                                         # update old coords (r,c)
+                        if ENABLE_MOTION_NOISE:                                                 # move robot forward and add noise if enabled
+                            robot.apply_action("FORWARD", wall_map, rng, noisy=True)            
                         else:
                             robot.move_rel(step_dr, step_dc, wall_map)
-                        eff_dr, eff_dc = robot.r - old_r, robot.c - old_c
-                        eff_moved = (eff_dr != 0 or eff_dc != 0)
+                        eff_dr, eff_dc = robot.r - old_r, robot.c - old_c                       # update effective row and column step dr
+                        eff_moved = (eff_dr != 0 or eff_dc != 0)                                # and if moved flag it
                         eff_action = "FORWARD"
                         eff_action_noisy = ENABLE_MOTION_NOISE
                         last_auto_step_ms = now
-                        if robot.r == target_r and robot.c == target_c:
-                            planned_path.pop(0)
-                        elif not eff_moved:
+                        if robot.r == target_r and robot.c == target_c:                         # if reached target pos given by planner
+                            planned_path.pop(0)                                                     # continue to next move
+                        elif not eff_moved:                                                     # otherwise if it didn't move - it got stuck
                             print("Forward move blocked by wall — plan is invalid. Re-localizing...")
-                            reset_auto(AUTO_LOCALIZING)
+                            reset_auto(AUTO_LOCALIZING)                                             # mode: MOVING -> LOCALIZING
 
             else:  # AUTO_IDLE or AUTO_DONE — manual control
                 eff_dr, eff_dc = dr, dc
